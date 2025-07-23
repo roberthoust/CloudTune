@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4AEE18492E2D1BDD00A2D2E9 /* AudioKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4AEE18482E2D1BDD00A2D2E9 /* AudioKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		4A72662F2E292F6D00EABE06 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -29,9 +33,34 @@
 		4A7266382E292F6D00EABE06 /* CloudTuneUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CloudTuneUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		4A7266522E292FC700EABE06 /* Exceptions for "CloudTune" folder in "CloudTune" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+				STRUCTURE.txt,
+			);
+			target = 4A7266202E292F6D00EABE06 /* CloudTune */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		4A7266532E292FC700EABE06 /* Exceptions for "CloudTune" folder in "Compile Sources" phase from "CloudTune" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = 4A72661D2E292F6D00EABE06 /* Sources */;
+			membershipExceptions = (
+				STRUCTURE.txt,
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		4A7266232E292F6D00EABE06 /* CloudTune */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				4A7266522E292FC700EABE06 /* Exceptions for "CloudTune" folder in "CloudTune" target */,
+				4A7266532E292FC700EABE06 /* Exceptions for "CloudTune" folder in "Compile Sources" phase from "CloudTune" target */,
+			);
 			path = CloudTune;
 			sourceTree = "<group>";
 		};
@@ -52,6 +81,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4AEE18492E2D1BDD00A2D2E9 /* AudioKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +142,7 @@
 			);
 			name = CloudTune;
 			packageProductDependencies = (
+				4AEE18482E2D1BDD00A2D2E9 /* AudioKit */,
 			);
 			productName = CloudTune;
 			productReference = 4A7266212E292F6D00EABE06 /* CloudTune.app */;
@@ -195,6 +226,9 @@
 			);
 			mainGroup = 4A7266182E292F6D00EABE06;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4AEE17F72E2D1A2300A2D2E9 /* XCRemoteSwiftPackageReference "AudioKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4A7266222E292F6D00EABE06 /* Products */;
 			projectDirPath = "";
@@ -400,6 +434,7 @@
 				DEVELOPMENT_TEAM = QKBJ2F735Z;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CloudTune/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -428,6 +463,7 @@
 				DEVELOPMENT_TEAM = QKBJ2F735Z;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = CloudTune/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -558,6 +594,24 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		4AEE17F72E2D1A2300A2D2E9 /* XCRemoteSwiftPackageReference "AudioKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/AudioKit/AudioKit";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.6.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4AEE18482E2D1BDD00A2D2E9 /* AudioKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AudioKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4A7266192E292F6D00EABE06 /* Project object */;
 }

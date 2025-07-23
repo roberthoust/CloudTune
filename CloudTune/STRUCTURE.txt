@@ -1,0 +1,34 @@
+CloudMusicPlayer/
+├── Models/
+│   ├── Song.swift
+│   ├── Album.swift
+│   ├── Folder.swift
+│   └── EQPreset.swift
+│
+├── ViewModels/
+│   ├── LibraryViewModel.swift
+│   ├── PlayerViewModel.swift
+│   └── EQViewModel.swift
+│
+├── Views/
+│   ├── Library/
+│   │   ├── LibraryView.swift
+│   │   ├── AlbumsView.swift
+│   │   └── SongsView.swift
+│   ├── Player/
+│   │   └── PlayerView.swift
+│   └── Shared/
+│       ├── AlbumCardView.swift
+│       ├── SongRowView.swift
+│       └── TabBarView.swift
+│
+├── Managers/
+│   ├── SongLoader.swift       // Handles scanning folders and extracting metadata
+│   ├── FilePersistence.swift  // Load/save song/folder data to JSON
+│   └── EQManager.swift        // Apply and manage EQ presets
+│
+├── Resources/
+│   ├── DefaultCover.png
+│   └── UserData.json
+│
+└── CloudMusicPlayerApp.swift

@@ -1,17 +1,17 @@
-//
-//  CloudTuneApp.swift
-//  CloudTune
-//
-//  Created by Robert Houst on 7/17/25.
-//
-
 import SwiftUI
 
 @main
 struct CloudTuneApp: App {
+    @StateObject private var libraryVM = LibraryViewModel()
+    @StateObject private var playbackVM = PlaybackViewModel()
+    @StateObject private var playlistVM = PlaylistViewModel() // ✅ Add this
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environmentObject(libraryVM)
+                .environmentObject(playbackVM)
+                .environmentObject(playlistVM) // ✅ Inject it here
         }
     }
 }
