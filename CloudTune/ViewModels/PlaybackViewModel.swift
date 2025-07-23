@@ -1,4 +1,4 @@
-// Updated PlaybackViewModel.swift with EQManager integration and support for pause, resume, timer, and AVAudioPlayerNode limitations like seeking.
+// Finalized PlaybackViewModel.swift – delegates all playback & seeking to EQManager
 
 import Foundation
 import AVFoundation
@@ -20,7 +20,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
 
     @Published var isShuffle: Bool = false
     @Published var repeatMode: RepeatMode = .off
-    @Published var currentContextName: String? // Album or Playlist name
+    @Published var currentContextName: String?
 
     @Published var originalQueue: [Song] = []
     private var shuffledQueue: [Song] = []
@@ -31,6 +31,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
     }
 
     private var timer: Timer?
+    private var playbackStartTime: TimeInterval = 0
 
     override init() {
         super.init()
@@ -62,9 +63,10 @@ class PlaybackViewModel: NSObject, ObservableObject {
 
         do {
             try EQManager.shared.start()
-            try EQManager.shared.play(url: song.url)
+            try EQManager.shared.play(song: song) {}
             duration = song.duration ?? 0
             currentTime = 0
+            playbackStartTime = Date().timeIntervalSince1970
 
             isPlaying = true
             startTimer()
@@ -84,6 +86,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
             isPlaying = false
         } else {
             EQManager.shared.resume()
+            playbackStartTime = Date().timeIntervalSince1970 - currentTime
             isPlaying = true
         }
         updateNowPlayingPlaybackState()
@@ -107,10 +110,18 @@ class PlaybackViewModel: NSObject, ObservableObject {
     }
 
     func seek(to time: Double) {
-        // Seeking with AVAudioPlayerNode requires custom implementation.
-        // We'll need to reschedule the track from a specific time if needed.
-        // Placeholder for future implementation.
-        print("⚠️ Seek to \(time) not implemented with AVAudioPlayerNode yet.")
+        guard let _ = currentSong else { return }
+
+        let clampedTime = max(0, min(time, duration - 0.5))  // Avoid near-end skips
+
+        do {
+            try EQManager.shared.seek(to: clampedTime){}
+            playbackStartTime = Date().timeIntervalSince1970 - clampedTime
+            currentTime = clampedTime
+            startTimer()
+        } catch {
+            print("❌ Seek failed: \(error.localizedDescription)")
+        }
     }
 
     func skipForward() {
@@ -149,11 +160,34 @@ class PlaybackViewModel: NSObject, ObservableObject {
         }
     }
 
+    private func handleSongCompletion() {
+        print("🎧 handleSongCompletion() triggered — index: \(currentIndex), repeatMode: \(repeatMode), queue count: \(songQueue.count)")
+
+        if let song = currentSong {
+            print("📀 Current song: \(song.title)")
+        }
+
+        if repeatMode == .repeatOne {
+            print("🔁 Repeating current song.")
+            play(song: currentSong!, in: originalQueue, contextName: currentContextName)
+        } else if currentIndex + 1 < songQueue.count {
+            print("⏭ Skipping to next song.")
+            skipForward()
+        } else if repeatMode == .repeatAll {
+            print("🔄 Repeat all — starting from beginning.")
+            play(song: songQueue.first!, in: originalQueue, contextName: currentContextName)
+        } else {
+            print("⏹ Reached end of queue. Stopping playback.")
+            stop()
+        }
+    }
+
     private func startTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            self.currentTime += 0.3 // rough estimate since we can't read AVAudioPlayerNode time easily
+            let elapsed = Date().timeIntervalSince1970 - self.playbackStartTime
+            self.currentTime = min(elapsed, self.duration)
             self.updateNowPlayingElapsedTime()
         }
     }
