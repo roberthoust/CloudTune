@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		4A44A2B72E30D5DB00FEEC70 /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = 4A44A2B62E30D5D600FEEC70 /* .gitignore */; };
 		4AEE18492E2D1BDD00A2D2E9 /* AudioKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4AEE18482E2D1BDD00A2D2E9 /* AudioKit */; };
 /* End PBXBuildFile section */
 
@@ -28,6 +29,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		4A44A2B62E30D5D600FEEC70 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 		4A7266212E292F6D00EABE06 /* CloudTune.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CloudTune.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A72662E2E292F6D00EABE06 /* CloudTuneTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CloudTuneTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A7266382E292F6D00EABE06 /* CloudTuneUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CloudTuneUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -105,6 +107,7 @@
 		4A7266182E292F6D00EABE06 = {
 			isa = PBXGroup;
 			children = (
+				4A44A2B62E30D5D600FEEC70 /* .gitignore */,
 				4A7266232E292F6D00EABE06 /* CloudTune */,
 				4A7266312E292F6D00EABE06 /* CloudTuneTests */,
 				4A72663B2E292F6D00EABE06 /* CloudTuneUITests */,
@@ -246,6 +249,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4A44A2B72E30D5DB00FEEC70 /* .gitignore in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
