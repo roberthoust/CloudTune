@@ -20,16 +20,15 @@ struct SongsView: View {
 
     var body: some View {
         NavigationStack {
-            VStack {
+            VStack(spacing: 16) {
                 // Top Header
                 HStack {
                     Text("Songs")
-                        .font(.largeTitle)
-                        .bold()
+                        .font(.largeTitle.bold())
+                        .foregroundColor(.primary)
 
                     Spacer()
 
-                    // Sort Menu
                     Menu {
                         ForEach(SongSortOption.allCases, id: \.self) { option in
                             Button(option.rawValue) {
@@ -38,34 +37,41 @@ struct SongsView: View {
                         }
                     } label: {
                         Image(systemName: "arrow.up.arrow.down")
-                            .padding(8)
-                            .background(Color(.systemGray6))
+                            .font(.headline)
+                            .padding(10)
+                            .background(.thinMaterial)
                             .clipShape(Circle())
+                            .overlay(Circle().stroke(Color.appAccent, lineWidth: 1.5))
+                            .shadow(radius: 4)
                     }
                 }
                 .padding(.horizontal)
 
                 // Song List
                 ScrollView {
-                    LazyVStack(spacing: 12) {
+                    LazyVStack(spacing: 14) {
                         ForEach(sortedSongs) { song in
                             SongRow(song: song)
                                 .onTapGesture {
                                     print("🎵 Playing: \(song.title) by \(song.artist)")
+                                    if let index = sortedSongs.firstIndex(of: song) {
+                                        playbackVM.currentIndex = index
+                                    }
                                     playbackVM.play(song: song, in: sortedSongs)
 
-                                    // Delay to ensure state is set before presenting
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                                         isPresentingPlayer = true
                                     }
                                 }
                         }
                     }
+                    .padding(.horizontal)
                     .padding(.bottom, 100)
                 }
 
                 Spacer()
             }
+            .padding(.top)
             .fullScreenCover(isPresented: $isPresentingPlayer) {
                 PlayerView()
                     .environmentObject(playbackVM)
@@ -79,24 +85,27 @@ struct SongRow: View {
     let song: Song
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 14) {
             if let data = song.artwork, let image = UIImage(data: data) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
                     .frame(width: 60, height: 60)
-                    .cornerRadius(8)
+                    .cornerRadius(10)
+                    .clipped()
             } else {
                 Image("DefaultCover")
                     .resizable()
                     .scaledToFill()
                     .frame(width: 60, height: 60)
-                    .cornerRadius(8)
+                    .cornerRadius(10)
+                    .clipped()
             }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(song.displayTitle)
                     .font(.headline)
+                    .foregroundColor(.primary)
                     .lineLimit(1)
                 Text(song.displayArtist)
                     .font(.subheadline)
@@ -106,6 +115,13 @@ struct SongRow: View {
 
             Spacer()
         }
-        .padding(.horizontal)
+        .padding()
+        .background(.thinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.appAccent.opacity(0.3), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.08), radius: 5, x: 0, y: 2)
     }
 }

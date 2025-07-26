@@ -55,45 +55,59 @@ class PlaybackViewModel: NSObject, ObservableObject {
             EQManager.shared.stop()
         }
 
+        // If queue is different, determine index before assignment
         if queue != originalQueue {
+            if let index = queue.firstIndex(of: song) {
+                currentIndex = index
+            } else {
+                currentIndex = 0
+            }
+
             originalQueue = queue
             shuffledQueue = queue.shuffled()
+        } else {
+            if let index = songQueue.firstIndex(of: song) {
+                currentIndex = index
+            } else {
+                currentIndex = 0
+            }
         }
 
-        currentSong = song
+        currentSong = songQueue[currentIndex]
         currentContextName = contextName
 
-        if let index = songQueue.firstIndex(of: song) {
-            currentIndex = index
-        } else {
-            currentIndex = 0
-        }
+        print("▶️ Now playing index \(currentIndex) of \(songQueue.count): \(currentSong?.title ?? "nil") — \(currentSong?.artist ?? "nil")")
 
-        print("▶️ Now playing index \(currentIndex) of \(songQueue.count): \(song.title) — \(song.artist)")
-
-        EQManager.shared.stop()  // Always stop previous playback first
+        EQManager.shared.stop()
         let playbackID = UUID()
         self.currentPlaybackID = playbackID
 
         do {
             try EQManager.shared.start()
-
-            try EQManager.shared.play(song: song, id: playbackID) { [weak self] completedID in
+            let start = Date().timeIntervalSince1970
+            try EQManager.shared.play(song: currentSong!, id: playbackID) { [weak self] completedID in
                 guard let self = self else { return }
                 guard self.currentPlaybackID == completedID else {
                     print("⏭ Ignored completion from stale playback.")
                     return
                 }
+
+                let elapsed = Date().timeIntervalSince1970 - start
+                if elapsed < 1.0 {
+                    print("⚠️ Playback completion triggered too soon (\(elapsed)s) — ignoring.")
+                    return
+                }
+
                 print("🎧 PlaybackViewModel received completion")
                 self.handlePlaybackCompletion()
             }
 
-            duration = song.duration ?? 0
+            duration = currentSong?.duration ?? 0
             currentTime = 0
             isPlaying = true
             playbackStartTime = Date().timeIntervalSince1970
             startTimer()
-            updateNowPlayingInfo(for: song)
+            updateNowPlayingInfo(for: currentSong!)
         } catch {
             print("❌ Playback failed: \(error)")
         }

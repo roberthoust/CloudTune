@@ -80,7 +80,7 @@ struct EQSettingsView: View {
                             } maximumValueLabel: {
                                 Text("+12").font(.caption2)
                             }
-                            .accentColor(.blue)
+                            .tint(Color.accentColor)
                             .onChange(of: gains[i]) { _ in
                                 selectedPreset = nil
                                 EQManager.shared.setBands(gains)

@@ -27,28 +27,31 @@ struct PlaylistDetailView: View {
             VStack(alignment: .leading, spacing: 16) {
                 // MARK: - Stylized Cover Image
                 ZStack(alignment: .topTrailing) {
-                    if let filename = playlist.coverArtFilename,
-                       let image = loadCoverImage(filename: filename) {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(height: 250)
-                            .frame(maxWidth: .infinity)
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color("AppAccent"), lineWidth: 1.5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16)
+                                .fill(.ultraThinMaterial)
+                        )
+                        .frame(height: 250)
+                        .padding([.horizontal, .top])
+                        .overlay(
+                            Group {
+                                if let filename = playlist.coverArtFilename,
+                                   let image = loadCoverImage(filename: filename) {
+                                    Image(uiImage: image)
+                                        .resizable()
+                                        .scaledToFill()
+                                } else {
+                                    Image("DefaultCover")
+                                        .resizable()
+                                        .scaledToFill()
+                                }
+                            }
                             .clipped()
                             .cornerRadius(16)
-                            .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 6)
                             .padding([.horizontal, .top])
-                    } else {
-                        Image("DefaultCover")
-                            .resizable()
-                            .scaledToFill()
-                            .frame(height: 250)
-                            .frame(maxWidth: .infinity)
-                            .clipped()
-                            .cornerRadius(16)
-                            .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 6)
-                            .padding([.horizontal, .top])
-                    }
+                        )
 
                     // MARK: - Edit Button
                     Button(action: {
@@ -67,6 +70,7 @@ struct PlaylistDetailView: View {
                     Text(playlist.name)
                         .font(.largeTitle)
                         .fontWeight(.bold)
+                        .foregroundColor(Color("AppAccent"))
                         .padding(.horizontal)
 
                     Text("\(playlistSongs.count) Song\(playlistSongs.count == 1 ? "" : "s")")
@@ -110,6 +114,10 @@ struct PlaylistDetailView: View {
                             }
                             .padding(.horizontal)
                             .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color("AppAccent").opacity(0.15))
+                            )
                         }
 
                         Divider()

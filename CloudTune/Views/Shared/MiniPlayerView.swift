@@ -8,35 +8,42 @@ struct MiniPlayerView: View {
             Button(action: {
                 playbackVM.showPlayer = true
             }) {
-                HStack(spacing: 12) {
+                HStack(spacing: 14) {
                     // Artwork thumbnail
                     if let data = song.artwork, let image = UIImage(data: data) {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFill()
-                            .frame(width: 48, height: 48)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .frame(width: 52, height: 52)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.appAccent.opacity(0.7), lineWidth: 1)
+                            )
                     } else {
                         Image("DefaultCover")
                             .resizable()
                             .scaledToFill()
-                            .frame(width: 48, height: 48)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .frame(width: 52, height: 52)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.appAccent.opacity(0.7), lineWidth: 1)
+                            )
                     }
 
                     // Song info
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(song.title)
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
+                            .font(.callout)
+                            .fontWeight(.medium)
+                            .foregroundColor(.primary)
                             .lineLimit(1)
-                            .truncationMode(.tail)
 
                         Text(song.artist)
-                            .font(.caption)
+                            .font(.caption2)
                             .foregroundColor(.secondary)
                             .lineLimit(1)
-                            .truncationMode(.tail)
                     }
 
                     Spacer()
@@ -47,25 +54,30 @@ struct MiniPlayerView: View {
                             playbackVM.togglePlayPause()
                         }) {
                             Image(systemName: playbackVM.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.title3)
-                                .padding(6)
+                                .font(.title2)
                         }
 
                         Button(action: {
                             playbackVM.skipForward()
                         }) {
                             Image(systemName: "forward.fill")
-                                .font(.title3)
-                                .padding(6)
+                                .font(.title2)
                         }
                     }
-                    .foregroundColor(.primary)
+                    .foregroundColor(.appAccent)
                 }
-                .padding(.vertical, 10)
-                .padding(.horizontal, 14)
-                .background(.ultraThinMaterial)
-                .cornerRadius(16)
-                .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                        .background(.ultraThinMaterial)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18)
+                                .stroke(Color.appAccent.opacity(0.5), lineWidth: 0.75)
+                        )
+                )
+                .shadow(color: .black.opacity(0.05), radius: 6, x: 0, y: 2)
             }
             .buttonStyle(.plain)
             .padding(.horizontal)

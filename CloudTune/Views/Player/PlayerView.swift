@@ -6,6 +6,7 @@ struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @GestureState private var dragOffset = CGSize.zero
+    @State private var artworkOffset: CGFloat = 0
     @State private var selectedIndex: Int = 0
     @State private var showMoreActions = false
     @State private var showAddToPlaylistSheet = false
@@ -19,115 +20,102 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 24) {
             // Top Bar
             HStack {
                 Button(action: { dismiss() }) {
                     Image(systemName: "chevron.down")
-                        .font(.title3.bold())
-                        .foregroundColor(.primary)
+                        .font(.title2)
                         .padding(8)
-                        .background(Color(.systemGray5))
-                        .clipShape(Circle())
+                        .background(.ultraThinMaterial, in: Circle())
                 }
+
+                Spacer()
+
+                Text("Now Playing")
+                    .font(.headline)
+                    .foregroundColor(.secondary)
 
                 Spacer()
 
                 Button(action: { showMoreActions = true }) {
                     Image(systemName: "ellipsis")
-                        .font(.title3.bold())
-                        .foregroundColor(.primary)
+                        .font(.title2)
                         .padding(8)
-                        .background(Color(.systemGray5))
-                        .clipShape(Circle())
-                }
-                Spacer()
-
-                Button(action: {
-                    showEQSheet = true
-                }) {
-                    Image(systemName: "slider.horizontal.3")
-                        .imageScale(.large)
-                }
-                .sheet(isPresented: $showEQSheet) {
-                    EQSettingsView()
+                        .background(.ultraThinMaterial, in: Circle())
                 }
             }
             .padding(.horizontal)
 
-            // Album Art Swipable
-            if !playbackVM.songQueue.isEmpty {
-                TabView(selection: $selectedIndex) {
-                    ForEach(playbackVM.songQueue.indices, id: \.self) { index in
-                        let song = playbackVM.songQueue[index]
-
-                        VStack(spacing: 4) {
-                            if let data = song.artwork, let img = UIImage(data: data) {
-                                Image(uiImage: img)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                                    .frame(width: 300, height: 300)
-                                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                                    .shadow(radius: 12)
-                            } else {
-                                Image("DefaultCover")
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                                    .frame(width: 300, height: 300)
-                                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                                    .shadow(radius: 12)
+            // Artwork
+            if playbackVM.currentSong != nil {
+                VStack(spacing: 10) {
+                    GeometryReader { geometry in
+                        let drag = DragGesture()
+                            .onChanged { value in
+                                // Optionally handle drag updates if needed
                             }
+                        withAnimation(.interactiveSpring(response: 0.4, dampingFraction: 0.75, blendDuration: 0.25)) {
+                            TabView(selection: $playbackVM.currentIndex) {
+                                ForEach(playbackVM.songQueue.indices, id: \.self) { index in
+                                    let song = playbackVM.songQueue[index]
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 24)
+                                            .fill(.ultraThinMaterial)
+                                            .frame(width: geometry.size.width * 0.8, height: geometry.size.width * 0.8)
+                                            .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color("appAccent"), lineWidth: 1.5))
+                                            .shadow(radius: 10)
 
-                            Text(song.displayTitle)
-                                .font(.title2.bold())
-                                .multilineTextAlignment(.center)
-                                .lineLimit(2)
-
-                            Text(song.displayArtist)
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
+                                        if let data = song.artwork, let img = UIImage(data: data) {
+                                            Image(uiImage: img)
+                                                .resizable()
+                                                .scaledToFill()
+                                                .frame(width: geometry.size.width * 0.75, height: geometry.size.width * 0.75)
+                                                .clipShape(RoundedRectangle(cornerRadius: 20))
+                                        } else {
+                                            Image("DefaultCover")
+                                                .resizable()
+                                                .scaledToFill()
+                                                .frame(width: geometry.size.width * 0.75, height: geometry.size.width * 0.75)
+                                                .clipShape(RoundedRectangle(cornerRadius: 20))
+                                        }
+                                    }
+                                    .tag(index)
+                                    .onTapGesture {
+                                        if index != playbackVM.currentIndex {
+                                            playbackVM.play(song: song, in: playbackVM.originalQueue, contextName: playbackVM.currentContextName)
+                                            playbackVM.currentIndex = index
+                                        }
+                                    }
+                                }
+                            }
+                            .tabViewStyle(.page(indexDisplayMode: .never))
+                            .onChange(of: playbackVM.currentIndex) { newIndex in
+                                let newSong = playbackVM.songQueue[newIndex]
+                                if playbackVM.currentSong?.url != newSong.url {
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                        playbackVM.play(song: newSong, in: playbackVM.originalQueue, contextName: playbackVM.currentContextName)
+                                    }
+                                }
+                            }
+                            .frame(height: geometry.size.width * 0.9)
+                            .animation(.interactiveSpring(response: 0.4, dampingFraction: 0.75, blendDuration: 0.25), value: playbackVM.currentIndex)
                         }
-                        .padding(.top, 8)
-                        .padding(.horizontal)
-                        .tag(index)
+                    }
+                    .frame(height: 340)
+
+                    if let song = playbackVM.currentSong {
+                        Text(song.displayTitle)
+                            .font(.title2.bold())
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+
+                        Text(song.displayArtist)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
                     }
                 }
-                .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
-                .frame(height: 360)
-                .onChange(of: selectedIndex) { newIndex in
-                    if newIndex != playbackVM.currentIndex {
-                        let newSong = playbackVM.songQueue[newIndex]
-                        playbackVM.play(song: newSong, in: playbackVM.originalQueue)
-                    }
-                }
-                .onAppear {
-                    selectedIndex = playbackVM.currentIndex
-                }
-                .onReceive(playbackVM.$currentIndex) { newIndex in
-                    selectedIndex = newIndex
-                }
             }
-
-            // Shuffle / Repeat Controls
-            HStack(spacing: 28) {
-                Button(action: { playbackVM.toggleShuffle() }) {
-                    Image(systemName: playbackVM.isShuffle ? "shuffle.circle.fill" : "shuffle.circle")
-                        .font(.title2)
-                        .foregroundColor(playbackVM.isShuffle ? .blue : .gray)
-                }
-
-                Button(action: { playbackVM.toggleRepeatMode() }) {
-                    Image(systemName:
-                        playbackVM.repeatMode == .repeatAll ? "repeat.circle.fill" :
-                        playbackVM.repeatMode == .repeatOne ? "repeat.1.circle.fill" :
-                        "repeat.circle"
-                    )
-                    .font(.title2)
-                    .foregroundColor(playbackVM.repeatMode == .off ? .gray : .blue)
-                }
-            }
-            .padding(.top, 12)
 
             // Seek Bar
             VStack(spacing: 6) {
@@ -143,66 +131,73 @@ struct PlayerView: View {
                     Spacer()
                     Text(formatTime(playbackVM.duration))
                 }
-                .font(.caption)
+                .font(.caption2)
                 .foregroundColor(.gray)
                 .padding(.horizontal, 12)
             }
 
-            // Playback Controls
+            // Playback Buttons
             HStack(spacing: 50) {
                 Button(action: {
                     playbackVM.skipBackward()
-                    selectedIndex = playbackVM.currentIndex
                 }) {
                     Image(systemName: "backward.fill")
-                        .font(.system(size: 28))
+                        .font(.title2)
                 }
 
                 Button(action: {
                     playbackVM.togglePlayPause()
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }) {
                     Image(systemName: playbackVM.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .resizable()
                         .scaledToFit()
                         .frame(width: 70, height: 70)
-                        .foregroundColor(.blue)
-                        .shadow(radius: 6)
+                        .scaleEffect(playbackVM.isPlaying ? 1.0 : 0.95)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.6), value: playbackVM.isPlaying)
                 }
 
                 Button(action: {
                     playbackVM.skipForward()
-                    selectedIndex = playbackVM.currentIndex
                 }) {
                     Image(systemName: "forward.fill")
-                        .font(.system(size: 28))
+                        .font(.title2)
                 }
             }
-            .padding(.top, 10)
+            .padding(.top)
 
-            Spacer()
+            // Shuffle / Repeat / EQ
+            HStack(spacing: 28) {
+                Button(action: { playbackVM.toggleShuffle() }) {
+                    Image(systemName: playbackVM.isShuffle ? "shuffle.circle.fill" : "shuffle.circle")
+                        .font(.title3)
+                        .foregroundColor(playbackVM.isShuffle ? Color("appAccent") : .gray)
+                }
 
-            // Stop & Close
-            Button(action: {
-                playbackVM.stop()
-                dismiss()
-            }) {
-                Text("Stop & Close")
-                    .fontWeight(.semibold)
-                    .foregroundColor(.red)
+                Button(action: { playbackVM.toggleRepeatMode() }) {
+                    Image(systemName:
+                        playbackVM.repeatMode == .repeatAll ? "repeat.circle.fill" :
+                        playbackVM.repeatMode == .repeatOne ? "repeat.1.circle.fill" :
+                        "repeat.circle"
+                    )
+                    .font(.title3)
+                    .foregroundColor(playbackVM.repeatMode == .off ? .gray : Color("appAccent"))
+                }
+
+                Button(action: { showEQSheet = true }) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.title3)
+                }
+                .sheet(isPresented: $showEQSheet) {
+                    EQSettingsView()
+                }
             }
-            .padding(.bottom, 16)
+
+            Spacer(minLength: 40)
         }
         .padding()
-        .background(Color(.systemBackground).ignoresSafeArea())
-        .offset(y: dragOffset.height)
-        .gesture(
-            DragGesture().updating($dragOffset) { value, state, _ in
-                if value.translation.height > 50 {
-                    dismiss()
-                }
-            }
-        )
-        // Compact More Actions Menu
+        .background(.ultraThinMaterial)
+        .edgesIgnoringSafeArea(.bottom)
         .confirmationDialog("More Actions", isPresented: $showMoreActions, titleVisibility: .visible) {
             if let current = playbackVM.currentSong {
                 Button("Add to Playlist", systemImage: "text.badge.plus") {
@@ -214,16 +209,16 @@ struct PlayerView: View {
                 }
             }
 
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) {
+                showMoreActions = false
+            }
         }
-        // Sheet for selecting playlist
         .sheet(isPresented: $showAddToPlaylistSheet) {
             if let current = playbackVM.currentSong {
                 AddToPlaylistSheet(song: current)
                     .environmentObject(playlistVM)
             }
         }
-        // Sheet for editing metadata
         .sheet(isPresented: $showEditMetadataSheet) {
             if let current = playbackVM.currentSong {
                 EditMetadataView(song: current)

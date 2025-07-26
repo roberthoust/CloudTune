@@ -16,11 +16,12 @@ struct RootView: View {
                         Label("Search", systemImage: "magnifyingglass")
                     }
 
-                Text("Settings")
+                SettingsView()
                     .tabItem {
                         Label("Settings", systemImage: "gear")
                     }
             }
+            .accentColor(AppTheme.accentColor)
 
             // ✅ Always include MiniPlayer if song exists
             if playbackVM.currentSong != nil {

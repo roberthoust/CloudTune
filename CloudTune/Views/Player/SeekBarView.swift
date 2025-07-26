@@ -5,10 +5,14 @@ struct SeekBarView: View {
     var duration: Double
     var onSeek: (Double) -> Void
 
+    @State private var isDragging = false
+    @State private var dragPosition: CGFloat?
+
     var body: some View {
         GeometryReader { geometry in
-            let percentage = CGFloat(currentTime / max(duration, 0.01))
             let barWidth = geometry.size.width
+            let progress = CGFloat(currentTime / max(duration, 0.01))
+            let effectiveProgress = isDragging ? (dragPosition ?? progress) : progress
 
             ZStack(alignment: .leading) {
                 // Background bar
@@ -16,31 +20,36 @@ struct SeekBarView: View {
                     .fill(Color.gray.opacity(0.3))
                     .frame(height: 6)
 
-                // Progress bar
+                // Progress bar (live or preview)
                 Capsule()
-                    .fill(Color.blue)
-                    .frame(width: percentage * barWidth, height: 6)
+                    .fill(Color("appAccent"))
+                    .frame(width: effectiveProgress * barWidth, height: 6)
+                    .animation(.easeOut(duration: 0.2), value: effectiveProgress)
 
                 // Thumb
                 Circle()
                     .fill(Color.white)
-                    .overlay(Circle().stroke(Color.blue, lineWidth: 2))
-                    .frame(width: 14, height: 14)
-                    .offset(x: max(0, min(percentage * barWidth - 7, barWidth - 14)))
+                    .overlay(Circle().stroke(Color("appAccent"), lineWidth: 2))
+                    .frame(width: 22, height: 22)
+                    .offset(x: max(0, min(effectiveProgress * barWidth - 11, barWidth - 22)))
                     .shadow(radius: 1)
+                    .animation(.easeOut(duration: 0.2), value: effectiveProgress)
             }
-            .frame(height: 20)
-            .contentShape(Rectangle()) // Makes the entire area tappable
+            .frame(height: 24)
+            .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        isDragging = true
                         let clamped = min(max(0, value.location.x / barWidth), 1)
-                        currentTime = clamped * duration
+                        dragPosition = clamped
                     }
                     .onEnded { value in
                         let clamped = min(max(0, value.location.x / barWidth), 1)
                         let newTime = clamped * duration
                         currentTime = newTime
+                        dragPosition = nil
+                        isDragging = false
                         onSeek(newTime)
                     }
             )

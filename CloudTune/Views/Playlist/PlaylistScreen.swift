@@ -11,36 +11,50 @@ struct PlaylistScreen: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 24) {
                 Text("Your Playlists")
-                    .font(.title.bold())
+                    .font(.largeTitle.bold())
                     .padding(.horizontal)
 
                 LazyVGrid(columns: columns, spacing: 20) {
                     ForEach(playlistVM.playlists) { playlist in
                         NavigationLink(destination: PlaylistDetailView(playlist: playlist)) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ZStack(alignment: .bottomTrailing) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 20)
+                                        .fill(.thinMaterial)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 20)
+                                                .stroke(Color.appAccent, lineWidth: 1.5)
+                                        )
+                                        .frame(height: 180)
+                                        .shadow(radius: 8)
+
                                     if let filename = playlist.coverArtFilename {
                                         let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
                                         let fullPath = folder.appendingPathComponent(filename).path
                                         if let image = UIImage(contentsOfFile: fullPath) {
                                             Image(uiImage: image)
                                                 .resizable()
-                                                .aspectRatio(1, contentMode: .fill)
+                                                .aspectRatio(contentMode: .fill)
                                                 .frame(width: 160, height: 160)
                                                 .cornerRadius(16)
-                                                .shadow(radius: 4)
                                                 .clipped()
                                         } else {
                                             Image("DefaultCover")
                                                 .resizable()
-                                                .aspectRatio(1, contentMode: .fill)
+                                                .aspectRatio(contentMode: .fill)
                                                 .frame(width: 160, height: 160)
                                                 .cornerRadius(16)
-                                                .shadow(radius: 4)
                                                 .clipped()
                                         }
+                                    } else {
+                                        Image("DefaultCover")
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                            .frame(width: 160, height: 160)
+                                            .cornerRadius(16)
+                                            .clipped()
                                     }
                                 }
 

@@ -15,6 +15,7 @@ class EQManager {
     private var activePlaybackID: UUID?
     private var currentSeekID: UUID?
     private var isSeeking = false
+    private(set) var isPlaying: Bool = false
 
     private var lastPlayStartTime: TimeInterval = 0
 
@@ -50,15 +51,24 @@ class EQManager {
         try engine.start()
     }
 
-    func play(song: Song, id playbackID: UUID, completion: @escaping (UUID) -> Void) throws {
+        func play(song: Song, id playbackID: UUID, completion: @escaping (UUID) -> Void) throws {
         activePlaybackID = playbackID
         playbackCompletionHandler = { completion(playbackID) }
 
         let file = try AVAudioFile(forReading: song.url)
-        currentFile = file
-        currentSong = song
 
+        // Full reset
         playerNode.stop()
+        playerNode.reset()
+        engine.stop()
+
+        engine.detach(playerNode)
+
+        engine.attach(playerNode)
+        engine.connect(playerNode, to: eq, format: nil)
+        engine.connect(eq, to: engine.mainMixerNode, format: nil)
+
+        try engine.start()
 
         print("🧪 EQManager — scheduling full file")
         let playStartTime = Date().timeIntervalSince1970
@@ -67,22 +77,15 @@ class EQManager {
 
         playerNode.scheduleFile(file, at: nil) { [weak self] in
             guard let self = self else { return }
-
             let now = Date().timeIntervalSince1970
             let elapsed = now - playStartTime
 
-            if self.isSeeking {
-                print("⏩ Seek in progress — ignore file completion.")
+            if self.isSeeking || self.activePlaybackID != playbackID {
                 return
             }
 
-            if self.activePlaybackID != playbackID {
-                print("🛑 Outdated playbackID ignored.")
-                return
-            }
-
-            if elapsed < 1.0 {
-                print("⚠️ Skipped too soon after playback start — ignoring completion.")
+            if elapsed < 1.5 {
+                print("⚠️ Skipped too soon after playback start (\(elapsed)s) — ignoring completion.")
                 return
             }
 
@@ -93,7 +96,13 @@ class EQManager {
             }
         }
 
-        playerNode.play()
+        currentFile = file
+        currentSong = song
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            self.playerNode.play()
+        }
+        isPlaying = true
     }
 
     func seek(to time: TimeInterval, completion: (() -> Void)? = nil) {
@@ -131,20 +140,26 @@ class EQManager {
         }
 
         playerNode.play()
+        isPlaying = true
     }
 
     func pause() {
         playerNode.pause()
+        isPlaying=false
+
     }
 
     func resume() {
         playerNode.play()
+        isPlaying=true
+
     }
 
     func stop() {
         playerNode.reset() // flush all scheduled buffers
         playerNode.stop()
         engine.stop()
+        isPlaying = false
         
         playbackCompletionHandler = nil
         activePlaybackID = nil

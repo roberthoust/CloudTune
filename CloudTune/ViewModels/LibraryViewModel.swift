@@ -65,9 +65,12 @@ class LibraryViewModel: ObservableObject {
         print("📁 Loading songs from: \(folderURL.path)")
 
         let newSongs = SongLoader.loadSongs(from: folderURL)
+        print("🎵 Found \(newSongs.count) songs in folder.")
 
-        // Save bookmark for persistent access
-        BookmarkManager.saveFolderBookmark(url: folderURL)
+        if newSongs.isEmpty {
+            print("⚠️ No valid songs found in this folder.")
+            return
+        }
 
         if let overrideName = albumMappings[folderURL.path] {
             let renamed = newSongs.map {
@@ -76,16 +79,16 @@ class LibraryViewModel: ObservableObject {
                      genre: $0.genre, year: $0.year, trackNumber: $0.trackNumber, discNumber: $0.discNumber)
             }
             appendSongs(renamed, from: folderURL)
-            return
-        }
-
-        if isMetadataIncomplete(newSongs) {
+        } else if isMetadataIncomplete(newSongs) {
             pendingFolder = folderURL
             pendingSongs = newSongs
             showAlbumPrompt = true
         } else {
             appendSongs(newSongs, from: folderURL)
         }
+
+        // Save bookmark only if we loaded something
+        BookmarkManager.saveFolderBookmark(url: folderURL)
     }
 
     /// Called after user confirms treating folder as album
