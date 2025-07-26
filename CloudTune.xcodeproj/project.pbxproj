@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		4A44A2B72E30D5DB00FEEC70 /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = 4A44A2B62E30D5D600FEEC70 /* .gitignore */; };
+		4A44A2C22E35859D00FEEC70 /* CropViewController in Frameworks */ = {isa = PBXBuildFile; productRef = 4A44A2C12E35859D00FEEC70 /* CropViewController */; };
+		4A44A2C42E35859D00FEEC70 /* TOCropViewController in Frameworks */ = {isa = PBXBuildFile; productRef = 4A44A2C32E35859D00FEEC70 /* TOCropViewController */; };
 		4AEE18492E2D1BDD00A2D2E9 /* AudioKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4AEE18482E2D1BDD00A2D2E9 /* AudioKit */; };
 /* End PBXBuildFile section */
 
@@ -84,6 +86,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				4AEE18492E2D1BDD00A2D2E9 /* AudioKit in Frameworks */,
+				4A44A2C42E35859D00FEEC70 /* TOCropViewController in Frameworks */,
+				4A44A2C22E35859D00FEEC70 /* CropViewController in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -146,6 +150,8 @@
 			name = CloudTune;
 			packageProductDependencies = (
 				4AEE18482E2D1BDD00A2D2E9 /* AudioKit */,
+				4A44A2C12E35859D00FEEC70 /* CropViewController */,
+				4A44A2C32E35859D00FEEC70 /* TOCropViewController */,
 			);
 			productName = CloudTune;
 			productReference = 4A7266212E292F6D00EABE06 /* CloudTune.app */;
@@ -231,6 +237,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				4AEE17F72E2D1A2300A2D2E9 /* XCRemoteSwiftPackageReference "AudioKit" */,
+				4A44A2C02E35857200FEEC70 /* XCRemoteSwiftPackageReference "TOCropViewController" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4A7266222E292F6D00EABE06 /* Products */;
@@ -600,6 +607,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		4A44A2C02E35857200FEEC70 /* XCRemoteSwiftPackageReference "TOCropViewController" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/TimOliver/TOCropViewController";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.7.4;
+			};
+		};
 		4AEE17F72E2D1A2300A2D2E9 /* XCRemoteSwiftPackageReference "AudioKit" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/AudioKit/AudioKit";
@@ -611,6 +626,16 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		4A44A2C12E35859D00FEEC70 /* CropViewController */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4A44A2C02E35857200FEEC70 /* XCRemoteSwiftPackageReference "TOCropViewController" */;
+			productName = CropViewController;
+		};
+		4A44A2C32E35859D00FEEC70 /* TOCropViewController */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4A44A2C02E35857200FEEC70 /* XCRemoteSwiftPackageReference "TOCropViewController" */;
+			productName = TOCropViewController;
+		};
 		4AEE18482E2D1BDD00A2D2E9 /* AudioKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AudioKit;

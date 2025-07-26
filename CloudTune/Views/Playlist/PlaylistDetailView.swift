@@ -8,83 +8,81 @@ struct PlaylistDetailView: View {
     @EnvironmentObject var playlistVM: PlaylistViewModel
     
     @State private var showEditSheet = false
+    @State private var matchedSongs: [Song] = []
 
-    var playlistSongs: [Song] {
-        let matched = playlist.songIDs.compactMap { id in
-            if let found = libraryVM.songs.first(where: { $0.id == id }) {
-                return found
-            } else {
-                print("⚠️ Playlist '\(playlist.name)' missing song with ID: \(id)")
-                return nil
-            }
-        }
-        print("🎧 Playlist '\(playlist.name)' loaded \(matched.count) of \(playlist.songIDs.count) songs.")
-        return matched
-    }
+    // Removed the computed property to avoid repeated computation
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                // MARK: - Stylized Cover Image
-                ZStack(alignment: .topTrailing) {
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color("AppAccent"), lineWidth: 1.5)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16)
-                                .fill(.ultraThinMaterial)
-                        )
-                        .frame(height: 250)
-                        .padding([.horizontal, .top])
-                        .overlay(
-                            Group {
-                                if let filename = playlist.coverArtFilename,
-                                   let image = loadCoverImage(filename: filename) {
-                                    Image(uiImage: image)
-                                        .resizable()
-                                        .scaledToFill()
-                                } else {
-                                    Image("DefaultCover")
-                                        .resizable()
-                                        .scaledToFill()
-                                }
-                            }
+            VStack(spacing: 24) {
+                // MARK: - Header with Cover Art and Info
+                ZStack(alignment: .bottomLeading) {
+                    if let filename = playlist.coverArtFilename,
+                       let image = loadCoverImage(filename: filename) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(height: 300)
                             .clipped()
-                            .cornerRadius(16)
-                            .padding([.horizontal, .top])
-                        )
-
-                    // MARK: - Edit Button
-                    Button(action: {
-                        showEditSheet = true
-                    }) {
-                        Image(systemName: "pencil.circle.fill")
-                            .font(.system(size: 26))
-                            .foregroundColor(.white)
-                            .shadow(radius: 4)
-                            .padding()
+                            .overlay(
+                                LinearGradient(
+                                    gradient: Gradient(colors: [Color.black.opacity(0.6), Color.clear]),
+                                    startPoint: .bottom,
+                                    endPoint: .top
+                                )
+                            )
+                    } else {
+                        Image("DefaultCover")
+                            .resizable()
+                            .scaledToFill()
+                            .frame(height: 300)
+                            .clipped()
+                            .overlay(
+                                LinearGradient(
+                                    gradient: Gradient(colors: [Color.black.opacity(0.6), Color.clear]),
+                                    startPoint: .bottom,
+                                    endPoint: .top
+                                )
+                            )
                     }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(playlist.name)
+                            .font(.largeTitle.bold())
+                            .foregroundColor(.white)
+
+                        Text("\(matchedSongs.count) song\(matchedSongs.count == 1 ? "" : "s")")
+                            .foregroundColor(.white.opacity(0.8))
+                            .font(.subheadline)
+
+                        Button(action: {
+                            guard let firstSong = matchedSongs.first else { return }
+                            playbackVM.play(song: firstSong, in: matchedSongs, contextName: playlist.name)
+                            playbackVM.showPlayer = true
+                        }) {
+                            Label("Play", systemImage: "play.fill")
+                                .font(.headline)
+                                .foregroundColor(Color(UIColor { $0.userInterfaceStyle == .dark ? .black : .white }))
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 10)
+                                .background(Color("appAccent"))
+                                .cornerRadius(20)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 20)
+                                        .stroke(Color.white.opacity(0.4), lineWidth: 1)
+                                )
+                                .shadow(color: Color.black.opacity(0.4), radius: 4, x: 0, y: 2)
+                        }
+                    }
+                    .padding()
                 }
 
-                // MARK: - Playlist Info
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(playlist.name)
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
-                        .foregroundColor(Color("AppAccent"))
-                        .padding(.horizontal)
-
-                    Text("\(playlistSongs.count) Song\(playlistSongs.count == 1 ? "" : "s")")
-                        .foregroundColor(.gray)
-                        .font(.subheadline)
-                        .padding(.horizontal)
-                }
-
-                // MARK: - Songs List
-                VStack(spacing: 0) {
-                    ForEach(playlistSongs) { song in
+                // MARK: - Song List
+                VStack(spacing: 12) {
+                    ForEach(matchedSongs) { song in
                         Button(action: {
                             print("🎶 Playing: \(song.title) from playlist: \(playlist.name)")
-                            playbackVM.play(song: song, in: playlistSongs, contextName: playlist.name)
+                            playbackVM.play(song: song, in: matchedSongs, contextName: playlist.name)
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                                 playbackVM.showPlayer = true
                             }
@@ -93,40 +91,60 @@ struct PlaylistDetailView: View {
                                 if let data = song.artwork, let uiImage = UIImage(data: data) {
                                     Image(uiImage: uiImage)
                                         .resizable()
-                                        .frame(width: 50, height: 50)
-                                        .cornerRadius(8)
+                                        .scaledToFill()
+                                        .frame(width: 60, height: 60)
+                                        .cornerRadius(10)
+                                        .clipped()
                                 } else {
                                     Image("DefaultCover")
                                         .resizable()
-                                        .frame(width: 50, height: 50)
-                                        .cornerRadius(8)
+                                        .scaledToFill()
+                                        .frame(width: 60, height: 60)
+                                        .cornerRadius(10)
+                                        .clipped()
                                 }
 
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(song.displayTitle)
-                                        .foregroundColor(.primary)
-                                    Text(song.displayArtist)
                                         .font(.subheadline)
+                                        .foregroundColor(.primary)
+                                        .lineLimit(nil)
+                                    Text(song.displayArtist)
+                                        .font(.caption)
                                         .foregroundColor(.secondary)
+                                        .lineLimit(1)
                                 }
 
                                 Spacer()
                             }
                             .padding(.horizontal)
                             .padding(.vertical, 8)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color("AppAccent").opacity(0.15))
-                            )
+                            .background(.thinMaterial)
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .contentShape(Rectangle())
                         }
-
-                        Divider()
-                            .padding(.leading, 70)
                     }
                 }
             }
         }
+        .onAppear(perform: loadPlaylistSongs)
+        .onChange(of: libraryVM.songs) { _ in
+            loadPlaylistSongs()
+        }
+        .onChange(of: playlist.songIDs) { _ in
+            loadPlaylistSongs()
+        }
+        .background(Color(.systemBackground))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: {
+                    showEditSheet = true
+                }) {
+                    Image(systemName: "pencil")
+                }
+            }
+        }
         .sheet(isPresented: $showEditSheet) {
             PlaylistEditView(playlist: playlist)
                 .environmentObject(playlistVM)
@@ -138,5 +156,18 @@ struct PlaylistDetailView: View {
         let path = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             .appendingPathComponent(filename)
         return UIImage(contentsOfFile: path.path)
+    }
+    
+    private func loadPlaylistSongs() {
+        var matched: [Song] = []
+        for id in playlist.songIDs {
+            if let found = libraryVM.songs.first(where: { $0.id == id }) {
+                matched.append(found)
+            } else {
+                print("⚠️ Playlist '\(playlist.name)' missing song with ID: \(id)")
+            }
+        }
+        print("🎧 Playlist '\(playlist.name)' loaded \(matched.count) of \(playlist.songIDs.count) songs.")
+        matchedSongs = matched
     }
 }

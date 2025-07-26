@@ -26,6 +26,7 @@ struct SettingsView: View {
 
                     NavigationLink(destination: ImportManagerView()) {
                         Label("Manage Imports", systemImage: "folder")
+                            .foregroundColor(.appAccent)
                     }
                 }
 
@@ -103,7 +104,6 @@ struct ImportManagerView: View {
                                 libraryVM.removeFolder(folder)
                             }) {
                                 Image(systemName: "trash")
-                                    .foregroundColor(.red)
                             }
                             .tint(.red)
                             .buttonStyle(BorderlessButtonStyle())

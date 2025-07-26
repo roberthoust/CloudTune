@@ -49,9 +49,10 @@ struct SongsView: View {
 
                 // Song List
                 ScrollView {
-                    LazyVStack(spacing: 14) {
+                    LazyVStack(spacing: 22) {
                         ForEach(sortedSongs) { song in
                             SongRow(song: song)
+                                .environmentObject(playbackVM)
                                 .onTapGesture {
                                     print("🎵 Playing: \(song.title) by \(song.artist)")
                                     if let index = sortedSongs.firstIndex(of: song) {
@@ -80,48 +81,58 @@ struct SongsView: View {
     }
 }
 
-// MARK: - SongRow (Inline)
+// MARK: - SongRow (Updated)
 struct SongRow: View {
     let song: Song
+    @EnvironmentObject var playbackVM: PlaybackViewModel
+
+    var isPlaying: Bool {
+        playbackVM.currentSong?.id == song.id
+    }
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             if let data = song.artwork, let image = UIImage(data: data) {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 60, height: 60)
+                    .frame(width: 70, height: 70)
                     .cornerRadius(10)
                     .clipped()
             } else {
                 Image("DefaultCover")
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 60, height: 60)
+                    .frame(width: 70, height: 70)
                     .cornerRadius(10)
                     .clipped()
             }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(song.displayTitle)
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                Text(song.displayArtist)
                     .font(.subheadline)
+                    .foregroundColor(.primary)
+                    .lineLimit(2)
+                Text(song.displayArtist)
+                    .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
             }
 
             Spacer()
+
+            if isPlaying {
+                Image(systemName: "waveform.circle.fill")
+                    .foregroundColor(.appAccent)
+                    .imageScale(.large)
+            }
         }
         .padding()
-        .background(.thinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
+        .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.appAccent.opacity(0.3), lineWidth: 1)
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
         )
-        .shadow(color: Color.black.opacity(0.08), radius: 5, x: 0, y: 2)
+        .padding(.horizontal)
     }
 }

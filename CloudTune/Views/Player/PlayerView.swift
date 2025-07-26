@@ -19,6 +19,7 @@ struct PlayerView: View {
         return String(format: "%d:%02d", mins, secs)
     }
 
+
     var body: some View {
         VStack(spacing: 24) {
             // Top Bar
@@ -93,9 +94,7 @@ struct PlayerView: View {
                             .onChange(of: playbackVM.currentIndex) { newIndex in
                                 let newSong = playbackVM.songQueue[newIndex]
                                 if playbackVM.currentSong?.url != newSong.url {
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                        playbackVM.play(song: newSong, in: playbackVM.originalQueue, contextName: playbackVM.currentContextName)
-                                    }
+                                    playbackVM.play(song: newSong, in: playbackVM.originalQueue, contextName: playbackVM.currentContextName)
                                 }
                             }
                             .frame(height: geometry.size.width * 0.9)
@@ -193,11 +192,13 @@ struct PlayerView: View {
                 }
             }
 
+
             Spacer(minLength: 40)
         }
         .padding()
         .background(.ultraThinMaterial)
         .edgesIgnoringSafeArea(.bottom)
+        
         .confirmationDialog("More Actions", isPresented: $showMoreActions, titleVisibility: .visible) {
             if let current = playbackVM.currentSong {
                 Button("Add to Playlist", systemImage: "text.badge.plus") {
@@ -226,3 +227,5 @@ struct PlayerView: View {
         }
     }
 }
+
+

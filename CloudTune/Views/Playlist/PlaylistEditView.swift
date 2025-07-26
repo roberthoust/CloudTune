@@ -7,6 +7,8 @@
 
 import SwiftUI
 import PhotosUI
+import CropViewController
+import TOCropViewController
 
 struct PlaylistEditView: View {
     @EnvironmentObject var playlistVM: PlaylistViewModel

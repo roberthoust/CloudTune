@@ -14,7 +14,7 @@ struct MiniPlayerView: View {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFill()
-                            .frame(width: 52, height: 52)
+                            .frame(width: 44, height: 44)
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 12)
@@ -24,7 +24,7 @@ struct MiniPlayerView: View {
                         Image("DefaultCover")
                             .resizable()
                             .scaledToFill()
-                            .frame(width: 52, height: 52)
+                            .frame(width: 44, height: 44)
                             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 12)
@@ -33,12 +33,11 @@ struct MiniPlayerView: View {
                     }
 
                     // Song info
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(song.title)
                             .font(.callout)
-                            .fontWeight(.medium)
-                            .foregroundColor(.primary)
-                            .lineLimit(1)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
 
                         Text(song.artist)
                             .font(.caption2)
@@ -66,14 +65,13 @@ struct MiniPlayerView: View {
                     }
                     .foregroundColor(.appAccent)
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
                 .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(.ultraThinMaterial)
-                        .background(.ultraThinMaterial)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 18)
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .stroke(Color.appAccent.opacity(0.5), lineWidth: 0.75)
                         )
                 )
@@ -83,5 +81,19 @@ struct MiniPlayerView: View {
             .padding(.horizontal)
             .transition(.move(edge: .bottom))
         }
+    }
+}
+
+struct RoundedCorner: Shape {
+    var radius: CGFloat = .infinity
+    var corners: UIRectCorner = .allCorners
+
+    func path(in rect: CGRect) -> Path {
+        let path = UIBezierPath(
+            roundedRect: rect,
+            byRoundingCorners: corners,
+            cornerRadii: CGSize(width: radius, height: radius)
+        )
+        return Path(path.cgPath)
     }
 }

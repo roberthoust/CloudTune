@@ -8,62 +8,60 @@ struct AlbumDetailView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(spacing: 16) {
+            LazyVStack(spacing: 14) {
                 ForEach(songs) { song in
-                    HStack(spacing: 12) {
-                        if let data = song.artwork, let uiImage = UIImage(data: data) {
-                            Image(uiImage: uiImage)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 60, height: 60)
-                                .background(.ultraThinMaterial)
-                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .stroke(Color("appAccent"), lineWidth: 1.2)
-                                )
-                                .shadow(color: Color.black.opacity(0.2), radius: 5, x: 0, y: 2)
-                        } else {
-                            Image("DefaultCover")
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 60, height: 60)
-                                .background(.ultraThinMaterial)
-                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .stroke(Color("appAccent"), lineWidth: 1.2)
-                                )
-                                .shadow(color: Color.black.opacity(0.2), radius: 5, x: 0, y: 2)
-                        }
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(song.displayTitle)
-                                .font(.headline)
-                            Text(song.displayArtist)
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
-
-                        Spacer()
-                    }
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-                    .background(.thinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .contentShape(Rectangle()) // Makes whole row tappable
-                    .onTapGesture {
+                    Button(action: {
                         print("🎵 Playing: \(song.title) from album: \(albumName)")
                         playbackVM.play(song: song, in: songs)
 
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                             playbackVM.showPlayer = true
                         }
+                    }) {
+                        HStack(spacing: 12) {
+                            if let data = song.artwork, let uiImage = UIImage(data: data) {
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 80, height: 80)
+                                    .cornerRadius(8)
+                                    .clipped()
+                            } else {
+                                Image("DefaultCover")
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 80, height: 80)
+                                    .cornerRadius(8)
+                                    .clipped()
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(song.displayTitle)
+                                    .font(.subheadline)
+                                    .foregroundColor(.primary)
+                                    .lineLimit(2)
+                                Text(song.displayArtist)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+
+                            Spacer()
+
+                            if playbackVM.currentSong?.id == song.id {
+                                Image(systemName: "waveform.circle.fill")
+                                    .foregroundColor(.appAccent)
+                                    .imageScale(.large)
+                            }
+                        }
+                        .padding()
+                        .background(Color(.systemBackground).opacity(0.8))
+                        .cornerRadius(14)
+                        .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
                     }
+                    .padding(.horizontal)
                 }
-                .padding(.horizontal)
             }
-            .padding(.top)
         }
         .navigationTitle(albumName)
     }
