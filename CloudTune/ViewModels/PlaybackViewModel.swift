@@ -1,4 +1,4 @@
-// Finalized PlaybackViewModel.swift – delegates all playback & seeking to EQManager
+// Finalized PlaybackViewModel.swift — safely handles seeking and playback completion
 
 import Foundation
 import AVFoundation
@@ -26,12 +26,13 @@ class PlaybackViewModel: NSObject, ObservableObject {
     private var shuffledQueue: [Song] = []
     @Published var currentIndex: Int = -1
 
+    private var currentPlaybackID: UUID?
+    private var timer: Timer?
+    private var playbackStartTime: TimeInterval = 0
+
     var songQueue: [Song] {
         isShuffle ? shuffledQueue : originalQueue
     }
-
-    private var timer: Timer?
-    private var playbackStartTime: TimeInterval = 0
 
     override init() {
         super.init()
@@ -50,29 +51,51 @@ class PlaybackViewModel: NSObject, ObservableObject {
     }
 
     func play(song: Song, in queue: [Song] = [], contextName: String? = nil) {
-        stop(clearSong: false)
+        if currentSong?.url != song.url {
+            EQManager.shared.stop()
+        }
 
         if queue != originalQueue {
             originalQueue = queue
             shuffledQueue = queue.shuffled()
         }
 
-        currentIndex = songQueue.firstIndex(of: song) ?? 0
         currentSong = song
         currentContextName = contextName
 
+        if let index = songQueue.firstIndex(of: song) {
+            currentIndex = index
+        } else {
+            currentIndex = 0
+        }
+
+        print("▶️ Now playing index \(currentIndex) of \(songQueue.count): \(song.title) — \(song.artist)")
+
+        EQManager.shared.stop()  // Always stop previous playback first
+        let playbackID = UUID()
+        self.currentPlaybackID = playbackID
+
         do {
             try EQManager.shared.start()
-            try EQManager.shared.play(song: song) {}
+
+            try EQManager.shared.play(song: song, id: playbackID) { [weak self] completedID in
+                guard let self = self else { return }
+                guard self.currentPlaybackID == completedID else {
+                    print("⏭ Ignored completion from stale playback.")
+                    return
+                }
+                print("🎧 PlaybackViewModel received completion")
+                self.handlePlaybackCompletion()
+            }
+
             duration = song.duration ?? 0
             currentTime = 0
-            playbackStartTime = Date().timeIntervalSince1970
-
             isPlaying = true
+            playbackStartTime = Date().timeIntervalSince1970
             startTimer()
             updateNowPlayingInfo(for: song)
         } catch {
-            print("❌ Failed to play with EQManager: \(error.localizedDescription)")
+            print("❌ Playback failed: \(error)")
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -110,38 +133,56 @@ class PlaybackViewModel: NSObject, ObservableObject {
     }
 
     func seek(to time: Double) {
-        guard let _ = currentSong else { return }
+        guard currentSong != nil else { return }
 
-        let clampedTime = max(0, min(time, duration - 0.5))  // Avoid near-end skips
+        let clampedTime = max(0, min(time, duration - 0.5))
 
-        do {
-            try EQManager.shared.seek(to: clampedTime){}
-            playbackStartTime = Date().timeIntervalSince1970 - clampedTime
-            currentTime = clampedTime
-            startTimer()
-        } catch {
-            print("❌ Seek failed: \(error.localizedDescription)")
+        EQManager.shared.seek(to: clampedTime) {
+            print("✅ seek(to:) completion handler fired")
         }
+        playbackStartTime = Date().timeIntervalSince1970 - clampedTime
+        currentTime = clampedTime
+        startTimer()
     }
 
     func skipForward() {
+        stop(clearSong: false)
+        
         if repeatMode == .repeatOne {
-            play(song: songQueue[currentIndex], in: originalQueue, contextName: currentContextName)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.play(song: self.songQueue[self.currentIndex], in: self.originalQueue, contextName: self.currentContextName)
+            }
             return
         }
 
         let nextIndex = currentIndex + 1
         if songQueue.indices.contains(nextIndex) {
-            play(song: songQueue[nextIndex], in: originalQueue, contextName: currentContextName)
+            currentIndex = nextIndex
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.play(song: self.songQueue[nextIndex], in: self.originalQueue, contextName: self.currentContextName)
+            }
         } else if repeatMode == .repeatAll {
-            play(song: songQueue.first!, in: originalQueue, contextName: currentContextName)
+            currentIndex = 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.play(song: self.songQueue[0], in: self.originalQueue, contextName: self.currentContextName)
+            }
         }
     }
 
     func skipBackward() {
+        stop(clearSong: false)
+
         let prevIndex = currentIndex - 1
         if songQueue.indices.contains(prevIndex) {
-            play(song: songQueue[prevIndex], in: originalQueue, contextName: currentContextName)
+            currentIndex = prevIndex
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.play(song: self.songQueue[prevIndex], in: self.originalQueue, contextName: self.currentContextName)
+            }
+        } else if repeatMode == .repeatAll {
+            currentIndex = songQueue.count - 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.play(song: self.songQueue[self.currentIndex], in: self.originalQueue, contextName: self.currentContextName)
+            }
         }
     }
 
@@ -160,25 +201,50 @@ class PlaybackViewModel: NSObject, ObservableObject {
         }
     }
 
-    private func handleSongCompletion() {
-        print("🎧 handleSongCompletion() triggered — index: \(currentIndex), repeatMode: \(repeatMode), queue count: \(songQueue.count)")
+    private func handlePlaybackCompletion() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard self.isPlaying else {
+                print("🛑 Completion ignored — playback already stopped.")
+                return
+            }
+            self.handleSongCompletion()
+        }
+    }
 
-        if let song = currentSong {
-            print("📀 Current song: \(song.title)")
+    private func handleSongCompletion() {
+        guard songQueue.indices.contains(currentIndex) else {
+            print("❌ Invalid index, stopping.")
+            stop()
+            return
         }
 
-        if repeatMode == .repeatOne {
+        print("🎧 handleSongCompletion() — currentIndex: \(currentIndex)")
+
+        switch repeatMode {
+        case .repeatOne:
             print("🔁 Repeating current song.")
-            play(song: currentSong!, in: originalQueue, contextName: currentContextName)
-        } else if currentIndex + 1 < songQueue.count {
-            print("⏭ Skipping to next song.")
-            skipForward()
-        } else if repeatMode == .repeatAll {
-            print("🔄 Repeat all — starting from beginning.")
-            play(song: songQueue.first!, in: originalQueue, contextName: currentContextName)
-        } else {
-            print("⏹ Reached end of queue. Stopping playback.")
-            stop()
+            play(song: songQueue[currentIndex], in: originalQueue, contextName: currentContextName)
+
+        case .repeatAll:
+            if currentIndex + 1 < songQueue.count {
+                print("⏭ Moving to next song.")
+                currentIndex += 1
+                play(song: songQueue[currentIndex], in: originalQueue, contextName: currentContextName)
+            } else {
+                print("🔄 Repeating from start.")
+                currentIndex = 0
+                play(song: songQueue[0], in: originalQueue, contextName: currentContextName)
+            }
+
+        case .off:
+            if currentIndex + 1 < songQueue.count {
+                print("⏭ Moving to next song.")
+                currentIndex += 1
+                play(song: songQueue[currentIndex], in: originalQueue, contextName: currentContextName)
+            } else {
+                print("⏹ End of queue.")
+                stop()
+            }
         }
     }
 

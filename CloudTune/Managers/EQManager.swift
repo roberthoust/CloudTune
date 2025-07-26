@@ -11,9 +11,18 @@ class EQManager {
 
     private var currentFile: AVAudioFile?
     private var currentSong: Song?
+    private var playbackCompletionHandler: (() -> Void)?
+    private var activePlaybackID: UUID?
+    private var currentSeekID: UUID?
     private var isSeeking = false
 
+    private var lastPlayStartTime: TimeInterval = 0
+
     let bandFrequencies: [Float] = [60, 250, 1000, 4000, 8000]
+
+    var lastUsedPresetName: String {
+        UserDefaults.standard.string(forKey: lastUsedNameKey) ?? "Flat"
+    }
 
     private init() {
         eq = AVAudioUnitEQ(numberOfBands: bandFrequencies.count)
@@ -32,8 +41,7 @@ class EQManager {
         engine.connect(playerNode, to: eq, format: nil)
         engine.connect(eq, to: engine.mainMixerNode, format: nil)
 
-        let lastGains = loadLastUsed()
-        setBands(lastGains)
+        setBands(loadLastUsed())
     }
 
     // MARK: - Playback Control
@@ -42,35 +50,61 @@ class EQManager {
         try engine.start()
     }
 
-    func play(song: Song, completion: @escaping () -> Void) throws {
-        isSeeking = false // ✅ Reset on fresh play
+    func play(song: Song, id playbackID: UUID, completion: @escaping (UUID) -> Void) throws {
+        activePlaybackID = playbackID
+        playbackCompletionHandler = { completion(playbackID) }
 
         let file = try AVAudioFile(forReading: song.url)
         currentFile = file
         currentSong = song
 
         playerNode.stop()
-        playerNode.scheduleFile(file, at: nil) {
+
+        print("🧪 EQManager — scheduling full file")
+        let playStartTime = Date().timeIntervalSince1970
+        self.lastPlayStartTime = playStartTime
+        isSeeking = false
+
+        playerNode.scheduleFile(file, at: nil) { [weak self] in
+            guard let self = self else { return }
+
+            let now = Date().timeIntervalSince1970
+            let elapsed = now - playStartTime
+
             if self.isSeeking {
-                print("⏩ Ignoring completion — still in seek mode.")
-                self.isSeeking = false
+                print("⏩ Seek in progress — ignore file completion.")
+                return
+            }
+
+            if self.activePlaybackID != playbackID {
+                print("🛑 Outdated playbackID ignored.")
+                return
+            }
+
+            if elapsed < 1.0 {
+                print("⚠️ Skipped too soon after playback start — ignoring completion.")
                 return
             }
 
             DispatchQueue.main.async {
-                completion()
+                print("🎯 Inside EQManager — about to call completion closure")
+                self.playbackCompletionHandler?()
+                self.playbackCompletionHandler = nil
             }
         }
+
         playerNode.play()
     }
 
-    func seek(to time: TimeInterval, completion: @escaping () -> Void) {
+    func seek(to time: TimeInterval, completion: (() -> Void)? = nil) {
         guard let file = currentFile else {
             print("❌ No active file to seek.")
             return
         }
 
-        isSeeking = true  // 🛑 Suppress completion handler
+        let seekID = UUID()
+        currentSeekID = seekID
+        isSeeking = true
 
         let sampleRate = file.processingFormat.sampleRate
         let totalFrames = file.length
@@ -81,23 +115,17 @@ class EQManager {
         file.framePosition = startFrame
         playerNode.stop()
 
-        playerNode.scheduleSegment(
-            file,
-            startingFrame: startFrame,
-            frameCount: framesToPlay,
-            at: nil
-        ) { [weak self] in
+        print("🧪 EQManager — scheduling segment from seek")
+        playerNode.scheduleSegment(file, startingFrame: startFrame, frameCount: framesToPlay, at: nil) { [weak self] in
             guard let self = self else { return }
-
-            if self.isSeeking {
-                print("⏩ Ignoring completion — it was a seek.")
-                self.isSeeking = false
+            guard self.currentSeekID == seekID else {
+                print("🛑 Outdated seekID ignored.")
                 return
             }
-
-            print("✅ Natural playback completion — calling handler.")
             DispatchQueue.main.async {
-                completion()
+                print("🔄 Seek completed.")
+                self.isSeeking = false
+                completion?()
             }
         }
 
@@ -113,7 +141,19 @@ class EQManager {
     }
 
     func stop() {
+        playerNode.reset() // flush all scheduled buffers
         playerNode.stop()
+        engine.stop()
+        
+        playbackCompletionHandler = nil
+        activePlaybackID = nil
+        currentSeekID = nil
+        isSeeking = false
+
+        currentFile = nil
+        currentSong = nil
+
+        print("🛑 EQManager — playback stopped and cleared.")
     }
 
     // MARK: - EQ Management
@@ -128,7 +168,7 @@ class EQManager {
         bands.map { $0.gain }
     }
 
-    // MARK: - Built-in & Custom Presets
+    // MARK: - Presets
 
     private let builtInPresets: [String: [Float]] = [
         "Flat": [0, 0, 0, 0, 0],
@@ -200,9 +240,5 @@ class EQManager {
             return gains
         }
         return builtInPresets["Flat"]!
-    }
-
-    var lastUsedPresetName: String? {
-        UserDefaults.standard.string(forKey: lastUsedNameKey)
     }
 }
