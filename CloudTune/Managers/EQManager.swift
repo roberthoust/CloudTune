@@ -97,34 +97,35 @@ class EQManager {
     }
 
     func seek(to time: TimeInterval, completion: (() -> Void)? = nil) {
-        guard let file = currentFile else {
-            print("❌ No active file to seek.")
+        guard let file = currentFile, let song = currentSong else {
+            print("❌ No active file or song to seek.")
             return
         }
 
-        let seekID = UUID()
-        currentSeekID = seekID
         isSeeking = true
+        let seekID = UUID()
+        activePlaybackID = seekID
 
         let sampleRate = file.processingFormat.sampleRate
         let totalFrames = file.length
-        let safeTime = min(max(0, time), Double(totalFrames) / sampleRate)
+        let songDuration = Double(totalFrames) / sampleRate
+        let safeTime = min(max(0, time), songDuration)
         let startFrame = AVAudioFramePosition(safeTime * sampleRate)
         let framesToPlay = AVAudioFrameCount(totalFrames - startFrame)
 
         file.framePosition = startFrame
         playerNode.stop()
 
-        print("🧪 EQManager — scheduling segment from seek")
-        playerNode.scheduleSegment(file, startingFrame: startFrame, frameCount: framesToPlay, at: nil) { [weak self] in
-            guard let self = self else { return }
-            guard self.currentSeekID == seekID else {
+        playerNode.scheduleSegment(file, startingFrame: startFrame, frameCount: framesToPlay, at: nil) {
+            guard self.activePlaybackID == seekID else {
                 print("🛑 Outdated seekID ignored.")
                 return
             }
+
             DispatchQueue.main.async {
-                print("🔄 Seek completed.")
-                self.isSeeking = false
+                print("✅ Segment finished — treating as completion")
+                self.playbackCompletionHandler?()
+                self.playbackCompletionHandler = nil
                 completion?()
             }
         }

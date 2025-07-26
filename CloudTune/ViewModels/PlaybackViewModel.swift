@@ -140,6 +140,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
         EQManager.shared.seek(to: clampedTime) {
             print("✅ seek(to:) completion handler fired")
         }
+
         playbackStartTime = Date().timeIntervalSince1970 - clampedTime
         currentTime = clampedTime
         startTimer()
