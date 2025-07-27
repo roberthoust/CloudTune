@@ -163,7 +163,15 @@ struct PlayerView: View {
                         .font(.title2)
                 }
             }
-            .padding(.top)
+            // EQ Status Label (Tappable)
+            Button(action: {
+                showEQSheet = true
+            }) {
+                Text("EQ: \(EQManager.shared.activePresetName.uppercased())")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                    .padding(.top, -8)
+            }
 
             // Shuffle / Repeat / EQ
             HStack(spacing: 28) {
@@ -227,5 +235,3 @@ struct PlayerView: View {
         }
     }
 }
-
-

@@ -21,7 +21,8 @@ struct PlaylistDetailView: View {
                        let image = loadCoverImage(filename: filename) {
                         Image(uiImage: image)
                             .resizable()
-                            .scaledToFill()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxWidth: .infinity)
                             .frame(height: 300)
                             .clipped()
                             .overlay(
@@ -34,7 +35,8 @@ struct PlaylistDetailView: View {
                     } else {
                         Image("DefaultCover")
                             .resizable()
-                            .scaledToFill()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(maxWidth: .infinity)
                             .frame(height: 300)
                             .clipped()
                             .overlay(
@@ -74,17 +76,21 @@ struct PlaylistDetailView: View {
                                 .shadow(color: Color.black.opacity(0.4), radius: 4, x: 0, y: 2)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
                 }
 
                 // MARK: - Song List
-                VStack(spacing: 12) {
+                LazyVStack(spacing: 22) {
                     ForEach(matchedSongs) { song in
                         Button(action: {
-                            print("🎶 Playing: \(song.title) from playlist: \(playlist.name)")
-                            playbackVM.play(song: song, in: matchedSongs, contextName: playlist.name)
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            if playbackVM.currentSong?.id == song.id {
                                 playbackVM.showPlayer = true
+                            } else {
+                                playbackVM.play(song: song, in: matchedSongs, contextName: playlist.name)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                    playbackVM.showPlayer = true
+                                }
                             }
                         }) {
                             HStack(spacing: 12) {
@@ -92,14 +98,14 @@ struct PlaylistDetailView: View {
                                     Image(uiImage: uiImage)
                                         .resizable()
                                         .scaledToFill()
-                                        .frame(width: 60, height: 60)
+                                        .frame(width: 70, height: 70)
                                         .cornerRadius(10)
                                         .clipped()
                                 } else {
                                     Image("DefaultCover")
                                         .resizable()
                                         .scaledToFill()
-                                        .frame(width: 60, height: 60)
+                                        .frame(width: 70, height: 70)
                                         .cornerRadius(10)
                                         .clipped()
                                 }
@@ -108,7 +114,7 @@ struct PlaylistDetailView: View {
                                     Text(song.displayTitle)
                                         .font(.subheadline)
                                         .foregroundColor(.primary)
-                                        .lineLimit(nil)
+                                        .lineLimit(2)
                                     Text(song.displayArtist)
                                         .font(.caption)
                                         .foregroundColor(.secondary)
@@ -116,17 +122,33 @@ struct PlaylistDetailView: View {
                                 }
 
                                 Spacer()
+
+                                if playbackVM.currentSong?.id == song.id {
+                                    Button(action: {
+                                        playbackVM.showPlayer = true
+                                    }) {
+                                        Image(systemName: "waveform.circle.fill")
+                                            .foregroundColor(.appAccent)
+                                            .imageScale(.large)
+                                    }
+                                }
                             }
+                            .padding()
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(.ultraThinMaterial)
+                                    .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
+                            )
                             .padding(.horizontal)
-                            .padding(.vertical, 8)
-                            .background(.thinMaterial)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .contentShape(Rectangle())
                         }
                     }
                 }
+                .padding(.horizontal)
+                .padding(.bottom, 100)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .onAppear(perform: loadPlaylistSongs)
         .onChange(of: libraryVM.songs) { _ in
             loadPlaylistSongs()

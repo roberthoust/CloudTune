@@ -54,14 +54,19 @@ struct SongsView: View {
                             SongRow(song: song)
                                 .environmentObject(playbackVM)
                                 .onTapGesture {
-                                    print("🎵 Playing: \(song.title) by \(song.artist)")
-                                    if let index = sortedSongs.firstIndex(of: song) {
-                                        playbackVM.currentIndex = index
-                                    }
-                                    playbackVM.play(song: song, in: sortedSongs)
-
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                    if playbackVM.currentSong?.id == song.id {
+                                        // Already playing this song, just present player
                                         isPresentingPlayer = true
+                                    } else {
+                                        print("🎵 Playing: \(song.title) by \(song.artist)")
+                                        if let index = sortedSongs.firstIndex(of: song) {
+                                            playbackVM.currentIndex = index
+                                        }
+                                        playbackVM.play(song: song, in: sortedSongs)
+
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                            isPresentingPlayer = true
+                                        }
                                     }
                                 }
                         }
@@ -96,15 +101,15 @@ struct SongRow: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 70, height: 70)
-                    .cornerRadius(10)
+                    .frame(width: 60, height: 60)
+                    .cornerRadius(8)
                     .clipped()
             } else {
                 Image("DefaultCover")
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 70, height: 70)
-                    .cornerRadius(10)
+                    .frame(width: 60, height: 60)
+                    .cornerRadius(8)
                     .clipped()
             }
 
@@ -127,12 +132,11 @@ struct SongRow: View {
                     .imageScale(.large)
             }
         }
-        .padding()
+        .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(.ultraThinMaterial)
                 .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
         )
-        .padding(.horizontal)
     }
 }

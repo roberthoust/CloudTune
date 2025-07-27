@@ -25,6 +25,22 @@ class EQManager {
         UserDefaults.standard.string(forKey: lastUsedNameKey) ?? "Flat"
     }
 
+    var activePresetName: String {
+        let gains = getCurrentGains()
+        if gains == builtInPresets["Flat"] {
+            return "OFF"
+        }
+        if let custom = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] {
+            for (name, storedGains) in custom where storedGains == gains {
+                return name
+            }
+        }
+        for (name, builtInGains) in builtInPresets where builtInGains == gains {
+            return name
+        }
+        return "Custom"
+    }
+
     private init() {
         eq = AVAudioUnitEQ(numberOfBands: bandFrequencies.count)
         bands = eq.bands

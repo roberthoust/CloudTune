@@ -2,6 +2,7 @@ import SwiftUI
 import PhotosUI
 
 struct PlaylistCreationView: View {
+    let preloadedSong: Song?
     @EnvironmentObject var playlistVM: PlaylistViewModel
     @EnvironmentObject var libraryVM: LibraryViewModel
     @Environment(\.dismiss) var dismiss
@@ -103,6 +104,10 @@ struct PlaylistCreationView: View {
             if playlistVM.saveCoverImage(image: image, as: filename) != nil {
                 coverPath = filename
             }
+        }
+
+        if let song = preloadedSong {
+            selectedSongs.insert(song.id)
         }
 
         playlistVM.createPlaylist(

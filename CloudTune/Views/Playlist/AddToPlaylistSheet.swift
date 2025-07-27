@@ -14,6 +14,7 @@ struct AddToPlaylistSheet: View {
 
     @State private var searchText = ""
     @State private var showCreatePlaylist = false
+    @State private var newlyCreatedPlaylist: Playlist?
 
     var filteredPlaylists: [Playlist] {
         if searchText.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -80,6 +81,9 @@ struct AddToPlaylistSheet: View {
 
                     // Create New Playlist Button
                     Button {
+                        let newPlaylist = Playlist(name: "New Playlist", coverArtFilename: nil, songIDs: [song.id])
+                        playlistVM.addPlaylist(newPlaylist)
+                        newlyCreatedPlaylist = newPlaylist
                         showCreatePlaylist = true
                     } label: {
                         Label("Create New Playlist", systemImage: "plus.circle.fill")
@@ -94,8 +98,13 @@ struct AddToPlaylistSheet: View {
             .navigationTitle("Add to Playlist")
             .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showCreatePlaylist) {
-                PlaylistCreationView()
-                    .environmentObject(playlistVM)
+                if let playlist = newlyCreatedPlaylist {
+                    PlaylistEditView(playlist: playlist)
+                        .environmentObject(playlistVM)
+                        .onDisappear {
+                            playlistVM.loadPlaylists()
+                        }
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
