@@ -5,81 +5,92 @@ struct MiniPlayerView: View {
 
     var body: some View {
         if let song = playbackVM.currentSong {
-            Button(action: {
-                playbackVM.showPlayer = true
-            }) {
-                HStack(spacing: 14) {
-                    // Artwork thumbnail
-                    if let data = song.artwork, let image = UIImage(data: data) {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 44, height: 44)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.appAccent.opacity(0.7), lineWidth: 1)
-                            )
-                    } else {
-                        Image("DefaultCover")
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 44, height: 44)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.appAccent.opacity(0.7), lineWidth: 1)
-                            )
-                    }
-
-                    // Song info
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(song.title)
-                            .font(.callout)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-
-                        Text(song.artist)
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    Spacer()
-
-                    // Controls
-                    HStack(spacing: 20) {
-                        Button(action: {
-                            playbackVM.togglePlayPause()
-                        }) {
-                            Image(systemName: playbackVM.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.title2)
-                        }
-
-                        Button(action: {
-                            playbackVM.skipForward()
-                        }) {
-                            Image(systemName: "forward.fill")
-                                .font(.title2)
-                        }
-                    }
-                    .foregroundColor(.appAccent)
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 6)
-                .background(
+            VStack {
+                ZStack(alignment: .center) {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(.ultraThinMaterial)
                         .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            RoundedRectangle(cornerRadius: 12)
                                 .stroke(Color.appAccent.opacity(0.5), lineWidth: 0.75)
                         )
-                )
-                .shadow(color: .black.opacity(0.05), radius: 6, x: 0, y: 2)
+                        .shadow(color: .black.opacity(0.05), radius: 6, x: 0, y: 2)
+
+                    HStack(spacing: 14) {
+                        // Artwork thumbnail
+                        if let data = song.artwork, let image = UIImage(data: data) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 44, height: 44)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color.appAccent.opacity(0.7), lineWidth: 1)
+                                )
+                        } else {
+                            Image("DefaultCover")
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 44, height: 44)
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color.appAccent.opacity(0.7), lineWidth: 1)
+                                )
+                        }
+
+                        // Song info
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(song.title)
+                                .font(.callout)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+
+                            Text(song.artist)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        // Controls
+                        HStack(spacing: 20) {
+                            Button(action: {
+                                playbackVM.skipBackward()
+                            }) {
+                                Image(systemName: "backward.fill")
+                                    .font(.title2)
+                            }
+
+                            Button(action: {
+                                playbackVM.togglePlayPause()
+                            }) {
+                                Image(systemName: playbackVM.isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.title2)
+                            }
+
+                            Button(action: {
+                                playbackVM.skipForward()
+                            }) {
+                                Image(systemName: "forward.fill")
+                                    .font(.title2)
+                            }
+                        }
+                        .foregroundColor(.appAccent)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 6)
+                }
+                .frame(height: 64)
+                .padding(.horizontal)
+                .onTapGesture {
+                    withAnimation {
+                        playbackVM.showPlayer = true
+                    }
+                }
+                .transition(.move(edge: .bottom))
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal)
-            .transition(.move(edge: .bottom))
         }
     }
 }

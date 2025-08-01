@@ -1,71 +1,127 @@
-//
-//  SettingsView.swift
-//  CloudTune
-//
-
 import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var libraryVM: LibraryViewModel
+    @EnvironmentObject var importState: ImportState
     @State private var showFolderPicker = false
+    @State private var showSongPicker = false
     @AppStorage("selectedColorScheme") private var selectedColorScheme: String = "system"
 
     var body: some View {
         NavigationStack {
             List {
-                Section(header: Text("Imported Folders")
-                    .font(.headline)
-                    .foregroundColor(.appAccent)) {
-
-                    Button(action: {
-                        showFolderPicker = true
-                    }) {
-                        Label("Import New Folder", systemImage: "folder.badge.plus")
-                            .foregroundColor(.appAccent)
-                    }
-
-                    NavigationLink(destination: ImportManagerView()) {
-                        Label("Manage Imports", systemImage: "folder")
-                            .foregroundColor(.appAccent)
-                    }
-                }
-
-                Section(header: Text("Appearance")
-                    .font(.headline)
-                    .foregroundColor(.appAccent)) {
-                    Picker("App Theme", selection: $selectedColorScheme) {
-                        Text("System Default").tag("system")
-                        Text("Light Mode").tag("light")
-                        Text("Dark Mode").tag("dark")
-                    }
-                    .pickerStyle(SegmentedPickerStyle())
-                    .padding(.vertical, 4)
-                }
-
-                // Future: Add audio preferences, theme toggles, or account settings here.
+                importedFoldersSection
+                appearanceSection
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("Settings")
             .sheet(isPresented: $showFolderPicker) {
                 FolderPicker { folderURL in
-                    libraryVM.loadSongs(from: folderURL)
-                }
-            }
-            .sheet(isPresented: $libraryVM.showAlbumPrompt) {
-                if let folder = libraryVM.pendingFolder {
-                    AlbumImportPromptView(
-                        folderURL: folder,
-                        defaultName: folder.lastPathComponent,
-                        onConfirm: { name in
-                            libraryVM.applyAlbumOverride(name: name)
-                        },
-                        onCancel: {
-                            libraryVM.showAlbumPrompt = false
+                    showFolderPicker = false
+                    Task {
+                        try? await Task.sleep(nanoseconds: 300_000_000) // allow UI to dismiss cleanly
+                        await MainActor.run { importState.isImporting = true }
+                        await libraryVM.importAndEnrich(folderURL)
+                        await MainActor.run {
+                            importState.isImporting = false
                         }
-                    )
+                    }
+                }
+                .interactiveDismissDisabled(importState.isImporting)
+            }
+            .fileImporter(
+                isPresented: $showSongPicker,
+                allowedContentTypes: [.mp3],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    Task {
+                        await MainActor.run { importState.isImporting = true }
+                        let folder = url.deletingLastPathComponent()
+                        await libraryVM.importAndEnrich(folder)
+                        await MainActor.run {
+                            importState.isImporting = false
+                        }
+                    }
+                case .failure(let error):
+                    print("❌ Failed to import song: \(error)")
                 }
             }
         }
         .preferredColorScheme(colorScheme(for: selectedColorScheme))
+        .overlay {
+            if importState.isImporting {
+                ZStack {
+                    Color.black.opacity(0.3).ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Importing…")
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                        Text("Please wait while we process your files.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding()
+                    .background(.regularMaterial)
+                    .cornerRadius(16)
+                }
+            }
+        }
+    }
+
+    private var importedFoldersSection: some View {
+        Section(header: sectionHeader("Imported Folders")) {
+            Button {
+                showFolderPicker = true
+            } label: {
+                Label("Import New Folder", systemImage: "folder.badge.plus")
+                    .foregroundColor(.appAccent)
+                    .fontWeight(.medium)
+                    .padding(.vertical, 6)
+            }
+
+            Button {
+                showSongPicker = true
+            } label: {
+                Label("Import Song", systemImage: "music.note")
+                    .foregroundColor(.appAccent)
+                    .fontWeight(.medium)
+                    .padding(.vertical, 6)
+            }
+
+            NavigationLink(destination: ImportManagerView()) {
+                Label("Manage Imports", systemImage: "folder")
+                    .foregroundColor(.appAccent)
+                    .fontWeight(.medium)
+                    .padding(.vertical, 6)
+            }
+        }
+        .headerProminence(.increased)
+    }
+
+    private var appearanceSection: some View {
+        Section(header: sectionHeader("Appearance")) {
+            VStack(alignment: .leading) {
+                Picker("App Theme", selection: $selectedColorScheme) {
+                    Text("System Default").tag("system")
+                    Text("Light Mode").tag("light")
+                    Text("Dark Mode").tag("dark")
+                }
+                .pickerStyle(SegmentedPickerStyle())
+            }
+            .padding(.top, 6)
+            .padding(.bottom, 10)
+        }
+        .headerProminence(.increased)
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
+            .foregroundColor(.appAccent)
     }
 
     func colorScheme(for setting: String) -> ColorScheme? {
@@ -79,45 +135,72 @@ struct SettingsView: View {
 
 struct ImportManagerView: View {
     @EnvironmentObject var libraryVM: LibraryViewModel
+    @State private var folderToDelete: URL?
+    @State private var showDeleteConfirmation = false
 
     var body: some View {
         NavigationStack {
             List {
-                if libraryVM.savedFolders.isEmpty {
-                    Text("No folders imported.")
-                        .foregroundColor(.gray)
-                        .padding()
-                } else {
-                    ForEach(libraryVM.savedFolders, id: \.self) { folder in
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(folder.lastPathComponent)
-                                    .font(.headline)
-                                    .foregroundColor(.appAccent)
-                                Text(folder.path)
-                                    .font(.caption)
-                                    .foregroundColor(.gray)
-                                    .lineLimit(1)
+                Section(header: Text("Imported Folders").font(.headline).foregroundColor(.appAccent)) {
+                    if libraryVM.savedFolders.isEmpty {
+                        Text("No folders imported.")
+                            .foregroundColor(.gray)
+                            .padding()
+                    } else {
+                        ForEach(libraryVM.savedFolders, id: \.self) { folder in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(folder.lastPathComponent)
+                                        .font(.body)
+                                        .foregroundColor(.primary)
+                                    Text(folder.path)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Button {
+                                    folderToDelete = folder
+                                    showDeleteConfirmation = true
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                        .labelStyle(IconOnlyLabelStyle())
+                                        .padding(8)
+                                        .background(Color.red.opacity(0.1))
+                                        .clipShape(Circle())
+                                }
+                                .buttonStyle(BorderlessButtonStyle())
                             }
-                            Spacer()
-                            Button(action: {
-                                libraryVM.removeFolder(folder)
-                            }) {
-                                Image(systemName: "trash")
-                            }
-                            .tint(.red)
-                            .buttonStyle(BorderlessButtonStyle())
+                            .padding(.vertical, 6)
                         }
-                        .padding(.vertical, 6)
-                        .padding(.horizontal)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color(.systemGray6))
-                        )
                     }
                 }
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("Manage Imports")
+            .confirmationDialog("Are you sure you want to remove this folder?", isPresented: $showDeleteConfirmation, titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    if let folder = folderToDelete {
+                        libraryVM.removeFolder(folder)
+                        folderToDelete = nil
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    folderToDelete = nil
+                }
+            }
         }
+    }
+}
+
+struct NavigationUtil {
+    static func setRootView<V: View>(destination: V) {
+        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = windowScene.windows.first else {
+            return
+        }
+
+        window.rootViewController = UIHostingController(rootView: destination)
+        window.makeKeyAndVisible()
     }
 }

@@ -26,6 +26,9 @@ class PlaybackViewModel: NSObject, ObservableObject {
     private var shuffledQueue: [Song] = []
     @Published var currentIndex: Int = -1
 
+    @Published var songToAddToPlaylist: Song?
+    @Published var showAddToPlaylistSheet: Bool = false
+
     private var currentPlaybackID: UUID?
     private var timer: Timer?
     private var playbackStartTime: TimeInterval = 0
@@ -37,13 +40,34 @@ class PlaybackViewModel: NSObject, ObservableObject {
     override init() {
         super.init()
         configureAudioSession()
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            guard let userInfo = notification.userInfo,
+                  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+            switch type {
+            case .began:
+                EQManager.shared.pause()
+                self?.isPlaying = false
+            case .ended:
+                try? AVAudioSession.sharedInstance().setActive(true)
+                EQManager.shared.resume()
+                self?.isPlaying = true
+            @unknown default:
+                break
+            }
+        }
         setupRemoteCommandCenter()
     }
 
     private func configureAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setCategory(.playback, mode: .default, options: [.allowAirPlay, .allowBluetooth])
             try session.setActive(true)
         } catch {
             print("❌ Failed to set audio session: \(error.localizedDescription)")
@@ -55,16 +79,23 @@ class PlaybackViewModel: NSObject, ObservableObject {
             EQManager.shared.stop()
         }
 
+        let reorderedQueue: [Song]
+        if queue.allSatisfy({ $0.trackNumber > 0 }) {
+            reorderedQueue = queue.sorted { $0.trackNumber < $1.trackNumber }
+        } else {
+            reorderedQueue = queue
+        }
+
         // If queue is different, determine index before assignment
-        if queue != originalQueue {
-            if let index = queue.firstIndex(of: song) {
+        if reorderedQueue != originalQueue {
+            if let index = reorderedQueue.firstIndex(of: song) {
                 currentIndex = index
             } else {
                 currentIndex = 0
             }
 
-            originalQueue = queue
-            shuffledQueue = queue.shuffled()
+            originalQueue = reorderedQueue
+            shuffledQueue = reorderedQueue.shuffled()
         } else {
             if let index = songQueue.firstIndex(of: song) {
                 currentIndex = index
@@ -203,16 +234,38 @@ class PlaybackViewModel: NSObject, ObservableObject {
 
     func toggleShuffle() {
         isShuffle.toggle()
-        if let current = currentSong {
-            currentIndex = songQueue.firstIndex(of: current) ?? 0
+        if isShuffle {
+            shuffledQueue = originalQueue
+            // Fisher-Yates shuffle
+            for i in stride(from: shuffledQueue.count - 1, through: 1, by: -1) {
+                let j = Int.random(in: 0...i)
+                shuffledQueue.swapAt(i, j)
+            }
+            if let current = currentSong {
+                // Ensure current song remains in place
+                if let currentIndexInShuffle = shuffledQueue.firstIndex(of: current) {
+                    shuffledQueue.swapAt(0, currentIndexInShuffle)
+                }
+                currentIndex = 0
+            }
+        } else {
+            if let current = currentSong {
+                currentIndex = originalQueue.firstIndex(of: current) ?? 0
+            }
         }
     }
 
     func toggleRepeatMode() {
         switch repeatMode {
-        case .off: repeatMode = .repeatAll
-        case .repeatAll: repeatMode = .repeatOne
-        case .repeatOne: repeatMode = .off
+        case .off:
+            repeatMode = .repeatAll
+            print("🔁 Repeat mode set to: Repeat All")
+        case .repeatAll:
+            repeatMode = .repeatOne
+            print("🔂 Repeat mode set to: Repeat One")
+        case .repeatOne:
+            repeatMode = .off
+            print("⏹ Repeat mode set to: Off")
         }
     }
 

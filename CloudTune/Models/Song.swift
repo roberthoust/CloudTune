@@ -10,15 +10,20 @@ struct Song: Identifiable, Codable, Equatable {
     var duration: Double
     var url: URL
     var artwork: Data?
+    var musicBrainzReleaseID: String?   // <- For fetching cover art from MusicBrainz
 
     var genre: String
     var year: String
     var trackNumber: Int
     var discNumber: Int
+    var externalURL: String
+    var tags: [String]
 
     enum CodingKeys: String, CodingKey {
         case id, title, artist, album, duration, url, artwork
         case genre, year, trackNumber, discNumber
+        case musicBrainzReleaseID
+        case externalURL, tags
     }
 
     init(
@@ -29,10 +34,13 @@ struct Song: Identifiable, Codable, Equatable {
         duration: Double,
         url: URL,
         artwork: Data? = nil,
+        musicBrainzReleaseID: String? = nil,
         genre: String = "",
         year: String = "",
         trackNumber: Int = 0,
-        discNumber: Int = 0
+        discNumber: Int = 0,
+        externalURL: String = "",
+        tags: [String] = []
     ) {
         self.id = id
         self.title = title
@@ -41,10 +49,13 @@ struct Song: Identifiable, Codable, Equatable {
         self.duration = duration
         self.url = url
         self.artwork = artwork
+        self.musicBrainzReleaseID = musicBrainzReleaseID
         self.genre = genre
         self.year = year
         self.trackNumber = trackNumber
         self.discNumber = discNumber
+        self.externalURL = externalURL
+        self.tags = tags
     }
 
     init(from decoder: Decoder) throws {
@@ -58,12 +69,47 @@ struct Song: Identifiable, Codable, Equatable {
         self.url = try container.decode(URL.self, forKey: .url)
         self.artwork = try container.decodeIfPresent(Data.self, forKey: .artwork)
 
+        self.musicBrainzReleaseID = try container.decodeIfPresent(String.self, forKey: .musicBrainzReleaseID)
         self.genre = try container.decodeIfPresent(String.self, forKey: .genre) ?? ""
         self.year = try container.decodeIfPresent(String.self, forKey: .year) ?? ""
         self.trackNumber = try container.decodeIfPresent(Int.self, forKey: .trackNumber) ?? 0
         self.discNumber = try container.decodeIfPresent(Int.self, forKey: .discNumber) ?? 0
+        self.externalURL = try container.decodeIfPresent(String.self, forKey: .externalURL) ?? ""
+        self.tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
     }
-    
+
+    var displayArtist: String {
+        artist.isEmpty ? "Unknown Artist" : artist
+    }
+
+    var displayTitle: String {
+        title
+    }
+
+    var displayAlbum: String {
+        album
+    }
+
+    var displayGenre: String {
+        genre
+    }
+
+    var displayYear: String {
+        year
+    }
+
+    var displayTrackNumber: Int {
+        trackNumber
+    }
+
+    var displayDiscNumber: Int {
+        discNumber
+    }
+
+    var displayExternalURL: String {
+        externalURL
+    }
+
     static func generateStableID(from url: URL) -> String {
         let path = url.standardizedFileURL.path
         let data = Data(path.utf8)

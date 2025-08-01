@@ -5,45 +5,33 @@ struct PlaylistCoverImageView: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 20)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20)
-                        .stroke(Color.appAccent, lineWidth: 1.5)
-                )
-                .shadow(radius: 8)
-
             if let filename = playlist.coverArtFilename {
                 let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
                 let fullPath = folder.appendingPathComponent(filename).path
                 if let image = UIImage(contentsOfFile: fullPath) {
                     Image(uiImage: image)
                         .resizable()
-                        .scaledToFill()
-                        .frame(width: 160, height: 160)
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 150, height: 150)
+                        .cornerRadius(14)
                         .clipped()
-                        .cornerRadius(16)
-                        .padding(6)
                 } else {
                     Image("DefaultCover")
                         .resizable()
-                        .scaledToFill()
-                        .frame(width: 160, height: 160)
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 150, height: 150)
+                        .cornerRadius(14)
                         .clipped()
-                        .cornerRadius(16)
-                        .padding(6)
                 }
             } else {
                 Image("DefaultCover")
                     .resizable()
-                    .scaledToFill()
-                    .frame(width: 160, height: 160)
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 150, height: 150)
+                    .cornerRadius(14)
                     .clipped()
-                    .cornerRadius(16)
-                    .padding(6)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 20))
     }
 }
 
@@ -72,9 +60,10 @@ struct PlaylistScreen: View {
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
-                    .frame(width: 180, height: 240)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(width: 160)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 4)
                 }
                 .contextMenu {
                     Button("Edit") {

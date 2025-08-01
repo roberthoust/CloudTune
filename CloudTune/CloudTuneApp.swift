@@ -1,3 +1,4 @@
+
 import SwiftUI
 
 @main
@@ -5,6 +6,7 @@ struct CloudTuneApp: App {
     @StateObject private var libraryVM = LibraryViewModel()
     @StateObject private var playbackVM = PlaybackViewModel()
     @StateObject private var playlistVM = PlaylistViewModel()
+    @StateObject private var importState = ImportState()
 
     var body: some Scene {
         WindowGroup {
@@ -12,7 +14,8 @@ struct CloudTuneApp: App {
                 .environmentObject(libraryVM)
                 .environmentObject(playbackVM)
                 .environmentObject(playlistVM)
-                .tint(Color.appAccent) // ✅ Apply global accent color here
+                .environmentObject(importState)
+                .tint(Color.appAccent)
         }
     }
 }

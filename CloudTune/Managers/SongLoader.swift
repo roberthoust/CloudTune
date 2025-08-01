@@ -7,7 +7,7 @@ class SongLoader {
     static let imageExtensions = ["jpg", "jpeg", "png", "webp"]
 
     /// Load all valid audio files from a given folder URL, optionally using a persisted security scope.
-    static func loadSongs(from folderURL: URL) -> [Song] {
+    static func loadSongs(from folderURL: URL) async -> [Song] {
         var songs: [Song] = []
 
         let fileManager = FileManager.default
@@ -28,11 +28,44 @@ class SongLoader {
         let fallbackArtwork = bestAlbumArtwork(in: files)
 
         for fileURL in files where allowedExtensions.contains(fileURL.pathExtension.lowercased()) {
-            var song = extractMetadata(from: fileURL)
-            if song.artwork == nil {
-                song.artwork = fallbackArtwork
+            let rawSong = extractMetadata(from: fileURL)
+            print("🔍 Extracted Raw Metadata — Title: \(rawSong.title), Artist: \(rawSong.artist ?? "nil"), Album: \(rawSong.album ?? "nil")")
+
+            do {
+                var enriched = try await MetadataEnricher.enrich(rawSong)
+                print("✨ Enriched Metadata — Title: \(enriched.title), Artist: \(enriched.artist), Album: \(enriched.album)")
+
+                // Try fetching artwork from API as first priority
+                if enriched.artwork == nil {
+                    if let apiArtwork = try? await MetadataEnricher.fetchArtwork(for: enriched) {
+                        enriched.artwork = apiArtwork
+                    } else {
+                        enriched.artwork = fallbackArtwork ?? rawSong.artwork
+                    }
+                }
+
+                // Ensure album/artist/title fallback safety
+                if enriched.album.isEmpty {
+                    enriched.album = rawSong.album
+                }
+                if enriched.artist.isEmpty {
+                    enriched.artist = rawSong.artist
+                }
+                if enriched.title.isEmpty {
+                    enriched.title = rawSong.title
+                }
+
+                songs.append(enriched)
+            } catch {
+                // Fallback to raw song if enrichment failed
+                print("⚠️ Enrichment failed for \(rawSong.title). Using fallback metadata.")
+                var fallback = rawSong
+                if fallback.artwork == nil {
+                    fallback.artwork = fallbackArtwork
+                }
+                print("📦 Fallback Metadata — Title: \(fallback.title), Artist: \(fallback.artist), Album: \(fallback.album)")
+                songs.append(fallback)
             }
-            songs.append(song)
         }
 
         return songs
@@ -70,41 +103,79 @@ class SongLoader {
         var artist: String? = nil
         var album: String? = nil
         var artworkData: Data? = nil
+        var genre: String? = nil
         let duration = CMTimeGetSeconds(asset.duration)
+        var trackNumber: Int? = nil
 
-        for meta in asset.commonMetadata {
-            switch meta.commonKey?.rawValue {
-            case "title":
-                title = meta.stringValue ?? title
-            case "artist":
-                artist = meta.stringValue
-            case "albumName":
-                album = meta.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-            case "artwork":
-                artworkData = meta.dataValue
-            default:
-                break
+for meta in asset.commonMetadata {
+    switch meta.commonKey?.rawValue {
+    case "title":
+        title = meta.stringValue ?? title
+    case "artist":
+        artist = meta.stringValue
+    case "albumName":
+        album = meta.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+    case "artwork":
+        artworkData = meta.dataValue
+    case "genre":
+        genre = meta.stringValue
+    case "trackNumber":
+        if let number = meta.numberValue?.intValue {
+            trackNumber = number
+        } else if let stringValue = meta.stringValue {
+            let parts = stringValue.components(separatedBy: "/")
+            if let first = parts.first, let num = Int(first.trimmingCharacters(in: .whitespaces)) {
+                trackNumber = num
             }
         }
+    default:
+        break
+    }
+}
+
+// MARK: Fallback: Look through all metadata formats for track number
+if trackNumber == nil {
+    for format in asset.availableMetadataFormats {
+        for item in asset.metadata(forFormat: format) {
+            if let key = item.commonKey?.rawValue, key == "trackNumber", let num = item.numberValue?.intValue {
+                trackNumber = num
+            }
+
+            if let identifier = item.identifier?.rawValue.lowercased(),
+               identifier.contains("track") || identifier.contains("trck"),
+               let num = item.numberValue?.intValue {
+                trackNumber = num
+            }
+
+            if let str = item.stringValue,
+               let num = Int(str.components(separatedBy: "/").first ?? "") {
+                trackNumber = num
+            }
+        }
+    }
+}
 
         // Fallback for FLAC (or bad metadata)
         if (artist == nil || artist!.isEmpty), fileURL.pathExtension.lowercased() == "flac" {
-            let components = filename.components(separatedBy: " - ")
+            let components = filename.components(separatedBy:   " - ")
             if components.count == 2 {
                 artist = components[0].trimmingCharacters(in: .whitespaces)
                 title = components[1].trimmingCharacters(in: .whitespaces)
             }
         }
 
-        return Song(
-            id: Song.generateStableID(from: fileURL),
-            title: title,
-            artist: artist?.isEmpty == false ? artist! : folderName,
-            album: album?.isEmpty == false ? album! : "No Album",
-            duration: duration,
-            url: fileURL,
-            artwork: artworkData
-        )
+print("🎯 Track #\(trackNumber ?? 0) for: \(title)")
+return Song(
+    id: Song.generateStableID(from: fileURL),
+    title: title,
+    artist: artist?.isEmpty == false ? artist! : folderName,
+    album: album?.isEmpty == false ? album! : "No Album",
+    duration: duration,
+    url: fileURL,
+    artwork: artworkData,
+    genre: genre?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+    trackNumber: trackNumber ?? 0
+)
     }
     
 }

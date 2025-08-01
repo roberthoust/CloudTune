@@ -16,46 +16,38 @@ struct PlaylistDetailView: View {
         ScrollView {
             VStack(spacing: 24) {
                 // MARK: - Header with Cover Art and Info
-                ZStack(alignment: .bottomLeading) {
+                VStack(alignment: .leading, spacing: 16) {
                     if let filename = playlist.coverArtFilename,
                        let image = loadCoverImage(filename: filename) {
                         Image(uiImage: image)
                             .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 300)
+                            .aspectRatio(contentMode: .fill)
+                            .frame(height: 240)
                             .clipped()
-                            .overlay(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [Color.black.opacity(0.6), Color.clear]),
-                                    startPoint: .bottom,
-                                    endPoint: .top
-                                )
-                            )
+                            .cornerRadius(20)
+                            .shadow(radius: 6)
+                            .padding(.horizontal)
                     } else {
                         Image("DefaultCover")
                             .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 300)
+                            .aspectRatio(contentMode: .fill)
+                            .frame(height: 240)
                             .clipped()
-                            .overlay(
-                                LinearGradient(
-                                    gradient: Gradient(colors: [Color.black.opacity(0.6), Color.clear]),
-                                    startPoint: .bottom,
-                                    endPoint: .top
-                                )
-                            )
+                            .cornerRadius(20)
+                            .shadow(radius: 6)
+                            .padding(.horizontal)
                     }
 
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(playlist.name)
-                            .font(.largeTitle.bold())
-                            .foregroundColor(.white)
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .foregroundColor(.primary)
+                            .padding(.horizontal)
 
                         Text("\(matchedSongs.count) song\(matchedSongs.count == 1 ? "" : "s")")
-                            .foregroundColor(.white.opacity(0.8))
                             .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal)
 
                         Button(action: {
                             guard let firstSong = matchedSongs.first else { return }
@@ -64,83 +56,34 @@ struct PlaylistDetailView: View {
                         }) {
                             Label("Play", systemImage: "play.fill")
                                 .font(.headline)
-                                .foregroundColor(Color(UIColor { $0.userInterfaceStyle == .dark ? .black : .white }))
+                                .foregroundColor(.white)
                                 .padding(.horizontal, 20)
                                 .padding(.vertical, 10)
                                 .background(Color("appAccent"))
                                 .cornerRadius(20)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 20)
-                                        .stroke(Color.white.opacity(0.4), lineWidth: 1)
-                                )
-                                .shadow(color: Color.black.opacity(0.4), radius: 4, x: 0, y: 2)
                         }
+                        .padding(.horizontal)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
+                    .padding(.top, 8)
                 }
 
                 // MARK: - Song List
                 LazyVStack(spacing: 22) {
                     ForEach(matchedSongs) { song in
-                        Button(action: {
-                            if playbackVM.currentSong?.id == song.id {
-                                playbackVM.showPlayer = true
-                            } else {
-                                playbackVM.play(song: song, in: matchedSongs, contextName: playlist.name)
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                    playbackVM.showPlayer = true
-                                }
-                            }
-                        }) {
-                            HStack(spacing: 12) {
-                                if let data = song.artwork, let uiImage = UIImage(data: data) {
-                                    Image(uiImage: uiImage)
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(width: 70, height: 70)
-                                        .cornerRadius(10)
-                                        .clipped()
-                                } else {
-                                    Image("DefaultCover")
-                                        .resizable()
-                                        .scaledToFill()
-                                        .frame(width: 70, height: 70)
-                                        .cornerRadius(10)
-                                        .clipped()
-                                }
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(song.displayTitle)
-                                        .font(.subheadline)
-                                        .foregroundColor(.primary)
-                                        .lineLimit(2)
-                                    Text(song.displayArtist)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(1)
-                                }
-
-                                Spacer()
-
+                        SongRowView(
+                            song: song,
+                            isPlaying: playbackVM.currentSong?.id == song.id,
+                            onTap: {
                                 if playbackVM.currentSong?.id == song.id {
-                                    Button(action: {
+                                    playbackVM.showPlayer = true
+                                } else {
+                                    playbackVM.play(song: song, in: matchedSongs, contextName: playlist.name)
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                                         playbackVM.showPlayer = true
-                                    }) {
-                                        Image(systemName: "waveform.circle.fill")
-                                            .foregroundColor(.appAccent)
-                                            .imageScale(.large)
                                     }
                                 }
                             }
-                            .padding()
-                            .background(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill(.ultraThinMaterial)
-                                    .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
-                            )
-                            .padding(.horizontal)
-                        }
+                        )
                     }
                 }
                 .padding(.horizontal)

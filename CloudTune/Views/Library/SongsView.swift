@@ -1,5 +1,6 @@
 import SwiftUI
 
+
 struct SongsView: View {
     @EnvironmentObject var libraryVM: LibraryViewModel
     @EnvironmentObject var playbackVM: PlaybackViewModel
@@ -7,25 +8,34 @@ struct SongsView: View {
     @State private var selectedSort: SongSortOption = .recent
     @State private var isPresentingPlayer: Bool = false
 
-    var sortedSongs: [Song] {
-        switch selectedSort {
-        case .recent:
-            return libraryVM.songs.reversed()
-        case .title:
-            return libraryVM.songs.sorted { $0.title < $1.title }
-        case .artist:
-            return libraryVM.songs.sorted { $0.artist < $1.artist }
-        }
-    }
-
     var body: some View {
-        NavigationStack {
+        let sortedSongs: [Song] = {
+            switch selectedSort {
+            case .recent:
+                return libraryVM.songs.reversed()
+            case .title:
+                return libraryVM.songs.sorted {
+                    let m1 = (libraryVM as LibraryViewModel).songMetadataCache[$0.id]
+                    let m2 = (libraryVM as LibraryViewModel).songMetadataCache[$1.id]
+                    return (m1?.title ?? $0.title) < (m2?.title ?? $1.title)
+                }
+            case .artist:
+                return libraryVM.songs.sorted {
+                    let m1 = (libraryVM as LibraryViewModel).songMetadataCache[$0.id]
+                    let m2 = (libraryVM as LibraryViewModel).songMetadataCache[$1.id]
+                    return (m1?.artist ?? $0.artist) < (m2?.artist ?? $1.artist)
+                }
+            default:
+                return libraryVM.songs
+            }
+        }()
+        return NavigationStack {
             VStack(spacing: 16) {
                 // Top Header
                 HStack {
-                    Text("Songs")
+                    Text("Your Songs")
                         .font(.largeTitle.bold())
-                        .foregroundColor(.primary)
+                        .padding(.horizontal)
 
                     Spacer()
 
@@ -38,11 +48,11 @@ struct SongsView: View {
                     } label: {
                         Image(systemName: "arrow.up.arrow.down")
                             .font(.headline)
-                            .padding(10)
-                            .background(.thinMaterial)
+                            .padding(8)
+                            .background(Color.appAccent.opacity(0.2))
                             .clipShape(Circle())
                             .overlay(Circle().stroke(Color.appAccent, lineWidth: 1.5))
-                            .shadow(radius: 4)
+                            .shadow(color: Color.appAccent.opacity(0.3), radius: 4, x: 0, y: 2)
                     }
                 }
                 .padding(.horizontal)
@@ -51,7 +61,7 @@ struct SongsView: View {
                 ScrollView {
                     LazyVStack(spacing: 22) {
                         ForEach(sortedSongs) { song in
-                            SongRow(song: song)
+                            SongRow(song: song, libraryVM: libraryVM)
                                 .environmentObject(playbackVM)
                                 .onTapGesture {
                                     if playbackVM.currentSong?.id == song.id {
@@ -89,12 +99,22 @@ struct SongsView: View {
 // MARK: - SongRow (Updated)
 struct SongRow: View {
     let song: Song
+    @ObservedObject var libraryVM: LibraryViewModel
     @EnvironmentObject var playbackVM: PlaybackViewModel
 
     var isPlaying: Bool {
         playbackVM.currentSong?.id == song.id
     }
-
+    
+    var metadata: SongMetadata {
+        if let meta = libraryVM.songMetadataCache[song.id] {
+            return meta
+        } else {
+            return SongMetadata(title: song.title, artist: song.artist, album: song.album,
+                                genre: song.genre, year: song.year,
+                                trackNumber: song.trackNumber, discNumber: song.discNumber)
+        }
+    }
     var body: some View {
         HStack(spacing: 12) {
             if let data = song.artwork, let image = UIImage(data: data) {
@@ -114,11 +134,11 @@ struct SongRow: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(song.displayTitle)
+                Text(metadata.title)
                     .font(.subheadline)
                     .foregroundColor(.primary)
                     .lineLimit(2)
-                Text(song.displayArtist)
+                Text(metadata.artist ?? "Unknown Artist")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -132,11 +152,12 @@ struct SongRow: View {
                     .imageScale(.large)
             }
         }
-        .padding(10)
+        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.systemGray5))
+                .shadow(color: Color.black.opacity(0.04), radius: 2, x: 0, y: 1)
         )
     }
 }

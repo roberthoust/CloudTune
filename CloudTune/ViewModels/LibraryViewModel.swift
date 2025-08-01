@@ -1,117 +1,170 @@
 import Foundation
 import SwiftUI
+import AVFoundation
 
 class LibraryViewModel: ObservableObject {
     @Published var songs: [Song] = []
     @Published var savedFolders: [URL] = []
-
-    // 🧠 For smart album import prompting
-    @Published var showAlbumPrompt: Bool = false
-    @Published var pendingFolder: URL?
-    @Published var pendingSongs: [Song] = []
+    @Published var playlists: [Playlist] = []
     @Published var albumMappings: [String: String] = [:]
+    @Published var songMetadataCache: [String: SongMetadata] = [:]
+    @Published var selectedAlbumID: String?
+
+    var albums: [String] {
+        Set(songs.map { $0.album }).sorted()
+    }
 
     init() {
         albumMappings = AlbumMappingStore.load()
-        loadLibraryOnLaunch()
+        Task {
+            await loadLibraryOnLaunch()
+        }
     }
 
-    /// Called on App launch
-    func loadLibraryOnLaunch() {
+    func loadLibraryOnLaunch() async {
         print("🔁 Restoring bookmarks and loading songs...")
-
-        // Restore bookmarked folders with access
         let restoredFolders = BookmarkManager.restoreBookmarkedFolders()
-
-        // Deduplicate based on normalized paths
         let uniqueFolders = Dictionary(grouping: restoredFolders, by: { $0.standardizedFileURL.path })
             .compactMapValues { $0.first }
             .values
         savedFolders = Array(uniqueFolders)
         FilePersistence.saveFolderList(savedFolders)
 
-        // Attempt to load cached library first
         let cachedSongs = FilePersistence.loadLibrary()
-
         if !cachedSongs.isEmpty {
             self.songs = cachedSongs
-        } else {
-            // If no cached songs, rescan folders
-            var loadedSongs: [Song] = []
-            for folder in savedFolders {
-                let songsFromFolder = SongLoader.loadSongs(from: folder)
-                let songsWithOverride: [Song]
-
-                if let overrideName = albumMappings[folder.path] {
-                    songsWithOverride = songsFromFolder.map {
-                        Song(id: $0.id, title: $0.title, artist: $0.artist, album: overrideName,
-                             duration: $0.duration, url: $0.url, artwork: $0.artwork,
-                             genre: $0.genre, year: $0.year, trackNumber: $0.trackNumber, discNumber: $0.discNumber)
-                    }
-                } else {
-                    songsWithOverride = songsFromFolder
-                }
-
-                loadedSongs.append(contentsOf: songsWithOverride)
-            }
-
-            self.songs = loadedSongs
-            FilePersistence.saveLibrary(loadedSongs)
+            return
         }
+
+        var loadedSongs: [Song] = []
+        for folder in savedFolders {
+            let enriched = await loadAndEnrichSongs(from: folder)
+            loadedSongs.append(contentsOf: enriched)
+        }
+
+        await MainActor.run {
+            self.songs = loadedSongs
+        }
+        FilePersistence.saveLibrary(loadedSongs)
     }
 
-    /// Called when user selects a new folder
-    func loadSongs(from folderURL: URL) {
+    func loadSongs(from folderURL: URL) async {
         print("📁 Loading songs from: \(folderURL.path)")
+        let enriched = await loadAndEnrichSongs(from: folderURL)
 
-        let newSongs = SongLoader.loadSongs(from: folderURL)
-        print("🎵 Found \(newSongs.count) songs in folder.")
-
-        if newSongs.isEmpty {
+        if enriched.isEmpty {
             print("⚠️ No valid songs found in this folder.")
             return
         }
 
-        if let overrideName = albumMappings[folderURL.path] {
-            let renamed = newSongs.map {
-                Song(id: $0.id, title: $0.title, artist: $0.artist, album: overrideName,
-                     duration: $0.duration, url: $0.url, artwork: $0.artwork,
-                     genre: $0.genre, year: $0.year, trackNumber: $0.trackNumber, discNumber: $0.discNumber)
-            }
-            appendSongs(renamed, from: folderURL)
-        } else if isMetadataIncomplete(newSongs) {
-            pendingFolder = folderURL
-            pendingSongs = newSongs
-            showAlbumPrompt = true
-        } else {
-            appendSongs(newSongs, from: folderURL)
-        }
-
-        // Save bookmark only if we loaded something
+        await appendSongs(enriched, from: folderURL)
         BookmarkManager.saveFolderBookmark(url: folderURL)
     }
 
-    /// Called after user confirms treating folder as album
-    func applyAlbumOverride(name: String) {
-        guard let folder = pendingFolder else { return }
+    @MainActor
+    func importAndEnrich(_ folderURL: URL) async {
+        print("📁 Importing and enriching: \(folderURL.lastPathComponent)")
 
-        let renamed = pendingSongs.map {
-            Song(id: $0.id, title: $0.title, artist: $0.artist, album: name,
-                 duration: $0.duration, url: $0.url, artwork: $0.artwork,
-                 genre: $0.genre, year: $0.year, trackNumber: $0.trackNumber, discNumber: $0.discNumber)
+        let enriched = await loadAndEnrichSongs(from: folderURL)
+        if enriched.isEmpty {
+            print("⚠️ No valid songs found in this folder.")
+            return
         }
 
-        albumMappings[folder.path] = name
-        AlbumMappingStore.save(albumMappings)
-        appendSongs(renamed, from: folder)
-
-        // Clear state
-        pendingFolder = nil
-        pendingSongs = []
-        showAlbumPrompt = false
+        await appendSongs(enriched, from: folderURL)
+        BookmarkManager.saveFolderBookmark(url: folderURL)
     }
 
-    /// Remove a folder and all associated songs + bookmark
+    private func loadAndEnrichSongs(from folderURL: URL) async -> [Song] {
+        let rawSongs = await SongLoader.loadSongs(from: folderURL)
+        print("🎵 Found \(rawSongs.count) raw songs in folder \(folderURL.lastPathComponent)")
+        guard !rawSongs.isEmpty else { return [] }
+
+        do {
+            let enrichedSongs = try await withThrowingTaskGroup(of: Song.self) { group in
+                for song in rawSongs {
+                    group.addTask {
+                        return await self.enrich(song: song)
+                    }
+                }
+                return try await group.reduce(into: [Song]()    ) { $0.append($1) }
+            }
+
+            let finalAlbumName = resolveFinalAlbumName(from: enrichedSongs, folderURL: folderURL)
+            albumMappings[folderURL.path] = finalAlbumName
+            AlbumMappingStore.save(albumMappings)
+
+            return renameSongs(enrichedSongs, withAlbumName: finalAlbumName)
+        } catch {
+            print("❌ Metadata enrichment failed: \(error)")
+            return rawSongs
+        }
+    }
+
+    private func enrich(song: Song) async -> Song {
+        let meta = await SongMetadataManager.shared.enrichMetadata(for: song)
+
+        await MainActor.run {
+            self.songMetadataCache[song.id] = meta
+        }
+
+        let cleanArtist = !(meta.artist ?? "").isEmpty ? meta.artist : song.artist
+        let cleanAlbum = !(meta.album ?? "").isEmpty ? meta.album : song.album
+        let cleanGenre = meta.genre?.isEmpty == false ? meta.genre : song.genre
+        let cleanYear = meta.year ?? song.year
+        let cleanTrack = meta.trackNumber ?? song.trackNumber
+        let cleanDisc = meta.discNumber ?? song.discNumber
+
+        return Song(
+            id: song.id,
+            title: meta.title,
+            artist: cleanArtist,
+            album: cleanAlbum,
+            duration: song.duration,
+            url: song.url,
+            artwork: song.artwork,
+            musicBrainzReleaseID: song.musicBrainzReleaseID,
+            genre: cleanGenre ?? song.genre,
+            year: cleanYear,
+            trackNumber: cleanTrack,
+            discNumber: cleanDisc
+        )
+    }
+
+    private func resolveFinalAlbumName(from songs: [Song], folderURL: URL) -> String {
+        let enrichedAlbumNames = songs.map { $0.album.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let counted = Dictionary(grouping: enrichedAlbumNames, by: { $0 })
+            .mapValues { $0.count }
+            .filter { !$0.key.isEmpty && $0.key.lowercased() != "unknown album" }
+
+        if let (mostCommon, count) = counted
+            .filter({ $0.key.lowercased() != "no album" })
+            .max(by: { $0.value < $1.value }),
+            Double(count) / Double(songs.count) >= 0.4 {
+            return mostCommon
+        } else {
+            return folderURL.lastPathComponent
+        }
+    }
+
+    private func appendSongs(_ newSongs: [Song], from folderURL: URL) async {
+        let normalizedPath = folderURL.standardizedFileURL.path
+        let existingPaths = Set(savedFolders.map { $0.standardizedFileURL.path })
+
+        if !existingPaths.contains(normalizedPath) {
+            savedFolders.append(folderURL.standardizedFileURL)
+            FilePersistence.saveFolderList(savedFolders)
+        }
+
+        let existingURLs = Set(songs.map { $0.url })
+        let filtered = newSongs.filter { !existingURLs.contains($0.url) }
+
+        await MainActor.run {
+            self.songs.append(contentsOf: filtered)
+            FilePersistence.saveLibrary(self.songs)
+        }
+    }
+
     func removeFolder(_ folder: URL) {
         savedFolders.removeAll { $0.standardizedFileURL.path == folder.standardizedFileURL.path }
         songs.removeAll { $0.url.standardizedFileURL.path.contains(folder.standardizedFileURL.path) }
@@ -124,27 +177,6 @@ class LibraryViewModel: ObservableObject {
         FilePersistence.saveLibrary(songs)
     }
 
-    /// Add songs to library + track folder
-    private func appendSongs(_ newSongs: [Song], from folderURL: URL) {
-        let normalizedPath = folderURL.standardizedFileURL.path
-        let existingPaths = Set(savedFolders.map { $0.standardizedFileURL.path })
-
-        if !existingPaths.contains(normalizedPath) {
-            savedFolders.append(folderURL.standardizedFileURL)
-            FilePersistence.saveFolderList(savedFolders)
-        }
-
-        // Prevent duplicates
-        let existingURLs = Set(songs.map { $0.url })
-        let filtered = newSongs.filter { !existingURLs.contains($0.url) }
-
-        DispatchQueue.main.async {
-            self.songs.append(contentsOf: filtered)
-            FilePersistence.saveLibrary(self.songs)
-        }
-    }
-
-    /// Detect folders with inconsistent album metadata
     func isMetadataIncomplete(_ songs: [Song]) -> Bool {
         guard songs.count > 1 else { return false }
 
@@ -154,25 +186,11 @@ class LibraryViewModel: ObservableObject {
         return albumNames.count > 1 || hasUnknowns
     }
 
-    func updateMetadata(for songID: String, with metadata: SongMetadataUpdate) {
-        guard let index = songs.firstIndex(where: { $0.id == songID }) else { return }
-        let old = songs[index]
-
-        let updatedSong = Song(
-            id: old.id,
-            title: metadata.title,
-            artist: metadata.artist,
-            album: metadata.album,
-            duration: old.duration,
-            url: old.url,
-            artwork: old.artwork,
-            genre: metadata.genre ?? "",
-            year: metadata.year ?? "",
-            trackNumber: metadata.trackNumber ?? 0,
-            discNumber: metadata.discNumber ?? 0
-        )
-
-        songs[index] = updatedSong
-        FilePersistence.saveLibrary(songs)
+    private func renameSongs(_ songs: [Song], withAlbumName albumName: String) -> [Song] {
+        return songs.map {
+            Song(id: $0.id, title: $0.title, artist: $0.artist, album: albumName,
+                 duration: $0.duration, url: $0.url, artwork: $0.artwork,
+                 genre: $0.genre, year: $0.year, trackNumber: $0.trackNumber, discNumber: $0.discNumber)
+        }
     }
 }

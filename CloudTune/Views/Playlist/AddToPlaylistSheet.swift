@@ -9,6 +9,7 @@ import SwiftUI
 
 struct AddToPlaylistSheet: View {
     let song: Song
+    @Binding var selectedPlaylist: Playlist?
     @EnvironmentObject var playlistVM: PlaylistViewModel
     @Environment(\.dismiss) var dismiss
 
@@ -44,6 +45,7 @@ struct AddToPlaylistSheet: View {
                                 updated.songIDs.append(song.id)
                                 playlistVM.updatePlaylist(updated)
                             }
+                            selectedPlaylist = updated
                             dismiss()
                         } label: {
                             HStack(spacing: 12) {
@@ -84,6 +86,7 @@ struct AddToPlaylistSheet: View {
                         let newPlaylist = Playlist(name: "New Playlist", coverArtFilename: nil, songIDs: [song.id])
                         playlistVM.addPlaylist(newPlaylist)
                         newlyCreatedPlaylist = newPlaylist
+                        selectedPlaylist = newPlaylist
                         showCreatePlaylist = true
                     } label: {
                         Label("Create New Playlist", systemImage: "plus.circle.fill")

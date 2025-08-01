@@ -59,4 +59,28 @@ struct FilePersistence {
         }
         return songs
     }
+
+    // Save all playlists
+    static func savePlaylists(_ playlists: [Playlist]) {
+        guard let url = playlistsURL else { return }
+        do {
+            let data = try JSONEncoder().encode(playlists)
+            try data.write(to: url)
+            print("💾 Playlists saved successfully.")
+        } catch {
+            print("❌ Failed to save playlists:", error)
+        }
+    }
+
+    // Load all playlists
+    static func loadPlaylists() -> [Playlist] {
+        guard let url = playlistsURL,
+              let data = try? Data(contentsOf: url),
+              let playlists = try? JSONDecoder().decode([Playlist].self, from: data)
+        else {
+            print("⚠️ Failed to load saved playlists.")
+            return []
+        }
+        return playlists
+    }
 }

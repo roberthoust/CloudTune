@@ -2,33 +2,99 @@ import SwiftUI
 
 struct LibraryView: View {
     @EnvironmentObject var libraryVM: LibraryViewModel
+    @EnvironmentObject var importState: ImportState
     @State private var showFolderPicker = false
     @State private var showFolderManager = false
-    
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+        ZStack {
+            NavigationStack {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 24) {
 
-                    // MARK: - Header
-                    Text("Your Library")
-                        .font(.largeTitle.bold())
+                        // MARK: - Header
+                        Text("Your Library")
+                            .font(.system(size: 32, weight: .semibold, design: .rounded))
+                            .padding(.horizontal)
+                        if let vm = _libraryVM.wrappedValue as? LibraryViewModel,
+                           !vm.songs.isEmpty || !vm.albums.isEmpty {
+                            Group {
+                                Text("\(libraryVM.songs.count) songs • \(libraryVM.albums.count) albums")
+                                    .font(.footnote)
+                                    .foregroundColor(.secondary)
+                                    .padding(.horizontal)
+                            }
+                        }
+
+                        // MARK: - Navigation Tiles (Vertical List)
+                        VStack(spacing: 16) {
+                            LibraryNavTile(title: "Songs", icon: "music.note", destination: SongsView())
+                            LibraryNavTile(title: "Albums", icon: "rectangle.stack", destination: AlbumsView())
+                            LibraryNavTile(title: "Playlists", icon: "text.badge.plus", destination: PlaylistScreen())
+                        }
                         .padding(.horizontal)
 
-                    // MARK: - Navigation Tiles (Vertical List)
-                    VStack(spacing: 16) {
-                        LibraryNavTile(title: "Songs", icon: "music.note", destination: SongsView())
-                        LibraryNavTile(title: "Albums", icon: "rectangle.stack", destination: AlbumsView())
-                        LibraryNavTile(title: "Playlists", icon: "text.badge.plus", destination: PlaylistScreen())
                     }
-                    .padding(.horizontal)
-
-                    Spacer()
+                    .padding(.top)
                 }
-                .padding(.top)
+                .toolbar {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Menu {
+                            Button("Import Folder") {
+                                showFolderPicker = true
+                            }
+                            Button("Import Song") {
+                                // Future: Song picker logic
+                            }
+                            Button("Import from Cloud") {
+                                // Future: Trigger cloud import or paywall
+                            }
+                            .disabled(true)
+                        } label: {
+                            Label("Add", systemImage: "plus")
+                                .labelStyle(IconOnlyLabelStyle())
+                                .padding(10)
+                                .background(Color.appAccent.opacity(0.1))
+                                .clipShape(Circle())
+                        }
+                    }
+                }
+                .sheet(isPresented: $showFolderPicker) {
+                    FolderPicker { folderURL in
+                        showFolderPicker = false
+                        importState.isImporting = true
+                        Task {
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            await libraryVM.importAndEnrich(folderURL)
+                            await MainActor.run {
+                                importState.isImporting = false
+                            }
+                        }
+                    }
+                }
+            }
+            if importState.isImporting {
+                ZStack {
+                    Color.black.opacity(0.3).ignoresSafeArea()
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(1.5)
+                        Text("Importing…")
+                            .foregroundColor(.white)
+                            .font(.headline)
+                        Text("Please wait while we process your files.")
+                            .foregroundColor(.white)
+                            .font(.footnote)
+                    }
+                    .padding()
+                    .background(Color.black.opacity(0.7))
+                    .cornerRadius(12)
+                }
             }
         }
+        .disabled(importState.isImporting)
+        .allowsHitTesting(!importState.isImporting)
     }
 }
 
@@ -52,9 +118,14 @@ struct LibraryNavTile<Destination: View>: View {
                         .foregroundColor(Color.appAccent)
                 }
 
-                Text(title)
-                    .font(.headline)
-                    .foregroundColor(.primary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                    Text("Browse \(title.lowercased())")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
 
                 Spacer()
 
@@ -62,10 +133,12 @@ struct LibraryNavTile<Destination: View>: View {
                     .foregroundColor(.gray)
             }
             .padding()
-            .background(Color(.systemGray6))
+            .background(Color("TileBackground"))
             .cornerRadius(16)
             .shadow(color: Color.black.opacity(0.05), radius: 5, x: 0, y: 2)
         }
+        .onTapGesture {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
     }
 }
-

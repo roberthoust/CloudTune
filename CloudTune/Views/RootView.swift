@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject var playbackVM: PlaybackViewModel
+    @EnvironmentObject var importState: ImportState
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -22,6 +23,8 @@ struct RootView: View {
                     }
             }
             .accentColor(AppTheme.accentColor)
+            .disabled(importState.isImporting)
+            .allowsHitTesting(!importState.isImporting)
 
             // ✅ Always include MiniPlayer if song exists
             if playbackVM.currentSong != nil {
@@ -30,8 +33,11 @@ struct RootView: View {
                     .padding(.bottom, 60)
                     .transition(.move(edge: .bottom))
             }
+
+            if importState.isImporting {
+                Color.black.opacity(0.3).ignoresSafeArea()
+            }
         }
-        // ✅ This must be outside the ZStack/conditional
         .fullScreenCover(isPresented: $playbackVM.showPlayer) {
             PlayerView()
                 .environmentObject(playbackVM)
