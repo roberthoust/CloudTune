@@ -59,32 +59,32 @@ class EQManager {
         engine.connect(eq, to: engine.mainMixerNode, format: nil)
 
         setBands(loadLastUsed())
-    }
 
-    // MARK: - Playback Control
+        do {
+            try engine.start()
+            print("✅ Audio engine started successfully")
+        } catch {
+            print("❌ Failed to start audio engine: \(error)")
+        }
+    }
 
     func start() throws {
-        try engine.start()
+        // You can keep this for compatibility, but engine is started in init now
+        if !engine.isRunning {
+            try engine.start()
+        }
     }
 
-        func play(song: Song, id playbackID: UUID, completion: @escaping (UUID) -> Void) throws {
+    func play(song: Song, id playbackID: UUID, completion: @escaping (UUID) -> Void) throws {
         activePlaybackID = playbackID
         playbackCompletionHandler = { completion(playbackID) }
 
         let file = try AVAudioFile(forReading: song.url)
+        currentFile = file
+        currentSong = song
 
-        // Full reset
-        playerNode.stop()
-        playerNode.reset()
-        engine.stop()
-
-        engine.detach(playerNode)
-
-        engine.attach(playerNode)
-        engine.connect(playerNode, to: eq, format: nil)
-        engine.connect(eq, to: engine.mainMixerNode, format: nil)
-
-        try engine.start()
+        playerNode.stop()      // Stop current playback before scheduling new
+        playerNode.reset()     // Reset scheduled buffers
 
         print("🧪 EQManager — scheduling full file")
         let playStartTime = Date().timeIntervalSince1970
@@ -112,9 +112,6 @@ class EQManager {
             }
         }
 
-        currentFile = file
-        currentSong = song
-
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             self.playerNode.play()
         }
@@ -122,7 +119,7 @@ class EQManager {
     }
 
     func seek(to time: TimeInterval, completion: (() -> Void)? = nil) {
-        guard let file = currentFile, let song = currentSong else {
+        guard let file = currentFile else {
             print("❌ No active file or song to seek.")
             return
         }
@@ -140,6 +137,7 @@ class EQManager {
 
         file.framePosition = startFrame
         playerNode.stop()
+        playerNode.reset()
 
         playerNode.scheduleSegment(file, startingFrame: startFrame, frameCount: framesToPlay, at: nil) {
             guard self.activePlaybackID == seekID else {
@@ -161,22 +159,21 @@ class EQManager {
 
     func pause() {
         playerNode.pause()
-        isPlaying=false
-
+        isPlaying = false
     }
 
     func resume() {
         playerNode.play()
-        isPlaying=true
-
+        isPlaying = true
     }
 
     func stop() {
-        playerNode.reset() // flush all scheduled buffers
+        playerNode.reset()
         playerNode.stop()
-        engine.stop()
+        // Don't stop engine here to avoid lag, only stop playerNode
+        // engine.stop()
         isPlaying = false
-        
+
         playbackCompletionHandler = nil
         activePlaybackID = nil
         currentSeekID = nil

@@ -88,6 +88,7 @@ struct PlayerView: View {
                     duration: playbackVM.duration,
                     onSeek: { newTime in playbackVM.seek(to: newTime) }
                 )
+                .tint(Color("appAccent"))
                 .frame(height: 30)
 
                 HStack {
@@ -143,20 +144,31 @@ struct PlayerView: View {
 
             // Shuffle / Repeat / EQ Controls
             HStack(spacing: 40) {
-                Button(action: { playbackVM.toggleShuffle() }) {
+                Button(action: {
+                    playbackVM.toggleShuffle()
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }) {
                     Image(systemName: playbackVM.isShuffle ? "shuffle.circle.fill" : "shuffle.circle")
                         .font(.title3)
-                        .foregroundColor(playbackVM.isShuffle ? Color("appAccent") : .gray)
+                        .foregroundStyle(playbackVM.isShuffle ? Color("appAccent") : Color.gray.opacity(0.5))
+
+                        .scaleEffect(playbackVM.isShuffle ? 1.1 : 1.0)
+                        .animation(.easeInOut(duration: 0.2), value: playbackVM.isShuffle)
                 }
 
-                Button(action: { playbackVM.toggleRepeatMode() }) {
+                Button(action: {
+                    playbackVM.toggleRepeatMode()
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }) {
                     Image(systemName:
                         playbackVM.repeatMode == .repeatAll ? "repeat.circle.fill" :
                         playbackVM.repeatMode == .repeatOne ? "repeat.1.circle.fill" :
                         "repeat.circle"
                     )
                     .font(.title3)
-                    .foregroundColor(playbackVM.repeatMode == .off ? .gray : Color("appAccent"))
+                    .foregroundStyle(playbackVM.repeatMode == .off ? Color.gray.opacity(0.5) : Color("appAccent"))
+                    .scaleEffect(playbackVM.repeatMode != .off ? 1.1 : 1.0)
+                    .animation(.easeInOut(duration: 0.2), value: playbackVM.repeatMode)
                 }
 
                 Button(action: { showEQSheet = true }) {

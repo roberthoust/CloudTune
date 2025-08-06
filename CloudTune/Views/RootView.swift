@@ -12,7 +12,7 @@ struct RootView: View {
                         Label("Library", systemImage: "music.note.list")
                     }
 
-                Text("Search")
+                SearchView()
                     .tabItem {
                         Label("Search", systemImage: "magnifyingglass")
                     }

@@ -14,6 +14,10 @@ class LibraryViewModel: ObservableObject {
         Set(songs.map { $0.album }).sorted()
     }
 
+    var allSongs: [Song] {
+        songs
+    }
+
     init() {
         albumMappings = AlbumMappingStore.load()
         Task {
@@ -27,12 +31,16 @@ class LibraryViewModel: ObservableObject {
         let uniqueFolders = Dictionary(grouping: restoredFolders, by: { $0.standardizedFileURL.path })
             .compactMapValues { $0.first }
             .values
-        savedFolders = Array(uniqueFolders)
+        await MainActor.run {
+            savedFolders = Array(uniqueFolders)
+        }
         FilePersistence.saveFolderList(savedFolders)
 
         let cachedSongs = FilePersistence.loadLibrary()
         if !cachedSongs.isEmpty {
-            self.songs = cachedSongs
+            await MainActor.run {
+                self.songs = cachedSongs
+            }
             return
         }
 
@@ -87,12 +95,14 @@ class LibraryViewModel: ObservableObject {
                         return await self.enrich(song: song)
                     }
                 }
-                return try await group.reduce(into: [Song]()    ) { $0.append($1) }
+                return try await group.reduce(into: [Song]()) { $0.append($1) }
             }
 
             let finalAlbumName = resolveFinalAlbumName(from: enrichedSongs, folderURL: folderURL)
-            albumMappings[folderURL.path] = finalAlbumName
-            AlbumMappingStore.save(albumMappings)
+            await MainActor.run {
+                albumMappings[folderURL.path] = finalAlbumName
+                AlbumMappingStore.save(albumMappings)
+            }
 
             return renameSongs(enrichedSongs, withAlbumName: finalAlbumName)
         } catch {
@@ -152,8 +162,10 @@ class LibraryViewModel: ObservableObject {
         let existingPaths = Set(savedFolders.map { $0.standardizedFileURL.path })
 
         if !existingPaths.contains(normalizedPath) {
-            savedFolders.append(folderURL.standardizedFileURL)
-            FilePersistence.saveFolderList(savedFolders)
+            await MainActor.run {
+                savedFolders.append(folderURL.standardizedFileURL)
+                FilePersistence.saveFolderList(savedFolders)
+            }
         }
 
         let existingURLs = Set(songs.map { $0.url })

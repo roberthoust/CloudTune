@@ -1,5 +1,3 @@
-// Finalized PlaybackViewModel.swift — safely handles seeking and playback completion
-
 import Foundation
 import AVFoundation
 import Combine
@@ -37,9 +35,12 @@ class PlaybackViewModel: NSObject, ObservableObject {
         isShuffle ? shuffledQueue : originalQueue
     }
 
+    private var audioSessionConfigured = false
+
     override init() {
         super.init()
         configureAudioSession()
+
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
@@ -54,23 +55,49 @@ class PlaybackViewModel: NSObject, ObservableObject {
                 EQManager.shared.pause()
                 self?.isPlaying = false
             case .ended:
-                try? AVAudioSession.sharedInstance().setActive(true)
-                EQManager.shared.resume()
-                self?.isPlaying = true
+                do {
+                    try AVAudioSession.sharedInstance().setActive(true)
+                    EQManager.shared.resume()
+                    self?.isPlaying = true
+                } catch {
+                    print("❌ Failed to reactivate audio session after interruption: \(error)")
+                }
             @unknown default:
                 break
             }
         }
+
+        // Optional debug notifications
+        NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification,
+                                               object: nil, queue: .main) { notification in
+            print("Audio session route change notification: \(notification)")
+        }
+
         setupRemoteCommandCenter()
     }
 
     private func configureAudioSession() {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [.allowAirPlay, .allowBluetooth])
-            try session.setActive(true)
-        } catch {
-            print("❌ Failed to set audio session: \(error.localizedDescription)")
+        DispatchQueue.main.async {
+            guard !self.audioSessionConfigured else {
+                print("⚠️ Audio session already configured, skipping.")
+                return
+            }
+            self.audioSessionConfigured = true
+
+            do {
+                let session = AVAudioSession.sharedInstance()
+                // Deactivate first to reset any existing config
+                try session.setActive(false)
+
+                // Simplify category & options to minimal
+                try session.setCategory(.playback, mode: .default)
+
+                try session.setActive(true)
+                print("✅ Audio session configured successfully.")
+            } catch {
+                print("❌ Failed to set audio session: \(error.localizedDescription)")
+                self.audioSessionConfigured = false // allow retry later
+            }
         }
     }
 
@@ -86,7 +113,6 @@ class PlaybackViewModel: NSObject, ObservableObject {
             reorderedQueue = queue
         }
 
-        // If queue is different, determine index before assignment
         if reorderedQueue != originalQueue {
             if let index = reorderedQueue.firstIndex(of: song) {
                 currentIndex = index
@@ -97,6 +123,9 @@ class PlaybackViewModel: NSObject, ObservableObject {
             originalQueue = reorderedQueue
             shuffledQueue = reorderedQueue.shuffled()
         } else {
+            originalQueue = queue
+            shuffledQueue = queue.shuffled()
+
             if let index = songQueue.firstIndex(of: song) {
                 currentIndex = index
             } else {
