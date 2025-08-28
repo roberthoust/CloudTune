@@ -11,6 +11,7 @@ struct SettingsView: View {
         NavigationStack {
             List {
                 importedFoldersSection
+                libraryMaintenanceSection
                 appearanceSection
             }
             .listStyle(.insetGrouped)
@@ -97,6 +98,44 @@ struct SettingsView: View {
                     .foregroundColor(.appAccent)
                     .fontWeight(.medium)
                     .padding(.vertical, 6)
+            }
+        }
+        .headerProminence(.increased)
+    }
+
+    private var libraryMaintenanceSection: some View {
+        Section(header: sectionHeader("Library Maintenance")) {
+            Button {
+                Task {
+                    await MainActor.run { importState.isImporting = true }
+
+                    // 1) Remove missing files
+                    let removed = await libraryVM.pruneMissingFiles()
+                    print("🧹 Removed \(removed) missing items")
+
+                    // 2) Re-scan saved folders
+                    for folder in libraryVM.savedFolders {
+                        await libraryVM.loadSongs(from: folder)
+                    }
+
+                    await MainActor.run { importState.isImporting = false }
+                }
+            } label: {
+                Label("Refresh Files", systemImage: "arrow.clockwise.circle")
+                    .foregroundColor(.appAccent)
+                    .fontWeight(.medium)
+                    .padding(.vertical, 6)
+            }
+
+            Button(role: .destructive) {
+                Task {
+                    await MainActor.run { importState.isImporting = true }
+                    let removed = await libraryVM.pruneMissingFiles()
+                    print("🗑️ Force removed \(removed) missing files")
+                    await MainActor.run { importState.isImporting = false }
+                }
+            } label: {
+                Label("Force Remove Missing Files", systemImage: "trash")
             }
         }
         .headerProminence(.increased)

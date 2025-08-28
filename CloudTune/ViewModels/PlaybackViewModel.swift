@@ -1,3 +1,8 @@
+//
+//  PlaybackViewModel.swift
+//  CloudTune
+//
+
 import Foundation
 import AVFoundation
 import Combine
@@ -9,6 +14,9 @@ enum RepeatMode {
 }
 
 class PlaybackViewModel: NSObject, ObservableObject {
+    // 🔁 New engine that owns the player/graph.
+    private let audio = AudioEngine()
+
     @Published var currentSong: Song?
     @Published var isPlaying: Bool = false
     @Published var showPlayer: Bool = false
@@ -27,38 +35,38 @@ class PlaybackViewModel: NSObject, ObservableObject {
     @Published var songToAddToPlaylist: Song?
     @Published var showAddToPlaylistSheet: Bool = false
 
-    private var currentPlaybackID: UUID?
     private var timer: Timer?
     private var playbackStartTime: TimeInterval = 0
 
-    var songQueue: [Song] {
-        isShuffle ? shuffledQueue : originalQueue
-    }
-
-    private var audioSessionConfigured = false
+    var songQueue: [Song] { isShuffle ? shuffledQueue : originalQueue }
 
     override init() {
         super.init()
-        configureAudioSession()
+        
+        EQManager.shared.attach(eq: audio.eq)
+
+        // AudioEngine already configures AVAudioSession internally.
+        // We just react to interruptions and route changes.
 
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
             queue: .main
         ) { [weak self] notification in
-            guard let userInfo = notification.userInfo,
+            guard let self = self,
+                  let userInfo = notification.userInfo,
                   let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
 
             switch type {
             case .began:
-                EQManager.shared.pause()
-                self?.isPlaying = false
+                self.audio.pause()
+                self.isPlaying = false
             case .ended:
                 do {
                     try AVAudioSession.sharedInstance().setActive(true)
-                    EQManager.shared.resume()
-                    self?.isPlaying = true
+                    self.audio.resume()
+                    self.isPlaying = true
                 } catch {
                     print("❌ Failed to reactivate audio session after interruption: \(error)")
                 }
@@ -67,45 +75,27 @@ class PlaybackViewModel: NSObject, ObservableObject {
             }
         }
 
-        // Optional debug notifications
-        NotificationCenter.default.addObserver(forName: AVAudioSession.routeChangeNotification,
-                                               object: nil, queue: .main) { notification in
+        // Optional debug
+        NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: nil,
+            queue: .main
+        ) { notification in
             print("Audio session route change notification: \(notification)")
         }
 
         setupRemoteCommandCenter()
     }
 
-    private func configureAudioSession() {
-        DispatchQueue.main.async {
-            guard !self.audioSessionConfigured else {
-                print("⚠️ Audio session already configured, skipping.")
-                return
-            }
-            self.audioSessionConfigured = true
-
-            do {
-                let session = AVAudioSession.sharedInstance()
-                // Deactivate first to reset any existing config
-                try session.setActive(false)
-
-                // Simplify category & options to minimal
-                try session.setCategory(.playback, mode: .default)
-
-                try session.setActive(true)
-                print("✅ Audio session configured successfully.")
-            } catch {
-                print("❌ Failed to set audio session: \(error.localizedDescription)")
-                self.audioSessionConfigured = false // allow retry later
-            }
-        }
-    }
+    // MARK: - Playback control
 
     func play(song: Song, in queue: [Song] = [], contextName: String? = nil) {
+        // If switching tracks, stop previous playback first.
         if currentSong?.url != song.url {
-            EQManager.shared.stop()
+            audio.stop()
         }
 
+        // Order queue (by trackNumber when available)
         let reorderedQueue: [Song]
         if queue.allSatisfy({ $0.trackNumber > 0 }) {
             reorderedQueue = queue.sorted { $0.trackNumber < $1.trackNumber }
@@ -114,23 +104,13 @@ class PlaybackViewModel: NSObject, ObservableObject {
         }
 
         if reorderedQueue != originalQueue {
-            if let index = reorderedQueue.firstIndex(of: song) {
-                currentIndex = index
-            } else {
-                currentIndex = 0
-            }
-
+            currentIndex = reorderedQueue.firstIndex(of: song) ?? 0
             originalQueue = reorderedQueue
             shuffledQueue = reorderedQueue.shuffled()
         } else {
             originalQueue = queue
             shuffledQueue = queue.shuffled()
-
-            if let index = songQueue.firstIndex(of: song) {
-                currentIndex = index
-            } else {
-                currentIndex = 0
-            }
+            currentIndex = songQueue.firstIndex(of: song) ?? 0
         }
 
         currentSong = songQueue[currentIndex]
@@ -138,39 +118,30 @@ class PlaybackViewModel: NSObject, ObservableObject {
 
         print("▶️ Now playing index \(currentIndex) of \(songQueue.count): \(currentSong?.title ?? "nil") — \(currentSong?.artist ?? "nil")")
 
-        EQManager.shared.stop()
-        let playbackID = UUID()
-        self.currentPlaybackID = playbackID
+        // Start playback via AudioEngine
+        let start = Date().timeIntervalSince1970
+        guard let url = currentSong?.url else { return }
 
-        do {
-            try EQManager.shared.start()
-            let start = Date().timeIntervalSince1970
-            try EQManager.shared.play(song: currentSong!, id: playbackID) { [weak self] completedID in
-                guard let self = self else { return }
-                guard self.currentPlaybackID == completedID else {
-                    print("⏭ Ignored completion from stale playback.")
-                    return
-                }
+        audio.play(url: url) { [weak self] in
+            guard let self = self else { return }
 
-                let elapsed = Date().timeIntervalSince1970 - start
-                if elapsed < 1.0 {
-                    print("⚠️ Playback completion triggered too soon (\(elapsed)s) — ignoring.")
-                    return
-                }
-
-                print("🎧 PlaybackViewModel received completion")
-                self.handlePlaybackCompletion()
+            // Guard against spurious super-early completions (rare race)
+            let elapsed = Date().timeIntervalSince1970 - start
+            if elapsed < 0.5 {
+                print("⚠️ Playback completion too soon (\(elapsed)s) — ignoring.")
+                return
             }
 
-            duration = currentSong?.duration ?? 0
-            currentTime = 0
-            isPlaying = true
-            playbackStartTime = Date().timeIntervalSince1970
-            startTimer()
-            updateNowPlayingInfo(for: currentSong!)
-        } catch {
-            print("❌ Playback failed: \(error)")
+            print("🎧 PlaybackViewModel received completion")
+            self.handlePlaybackCompletion()
         }
+
+        duration = currentSong?.duration ?? 0
+        currentTime = 0
+        isPlaying = true
+        playbackStartTime = Date().timeIntervalSince1970
+        startTimer()
+        if let s = currentSong { updateNowPlayingInfo(for: s) }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.shouldShowPlayer = true
@@ -179,10 +150,10 @@ class PlaybackViewModel: NSObject, ObservableObject {
 
     func togglePlayPause() {
         if isPlaying {
-            EQManager.shared.pause()
+            audio.pause()
             isPlaying = false
         } else {
-            EQManager.shared.resume()
+            audio.resume()
             playbackStartTime = Date().timeIntervalSince1970 - currentTime
             isPlaying = true
         }
@@ -190,7 +161,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
     }
 
     func stop(clearSong: Bool = true) {
-        EQManager.shared.stop()
+        audio.stop()
         timer?.invalidate()
         timer = nil
         isPlaying = false
@@ -209,10 +180,11 @@ class PlaybackViewModel: NSObject, ObservableObject {
     func seek(to time: Double) {
         guard currentSong != nil else { return }
 
-        let clampedTime = max(0, min(time, duration - 0.5))
+        let clampedTime = max(0, min(time, duration > 0 ? duration - 0.5 : time))
 
-        EQManager.shared.seek(to: clampedTime) {
+        audio.seek(to: clampedTime) { [weak self] in
             print("✅ seek(to:) completion handler fired")
+            self?.updateNowPlayingElapsedTime()
         }
 
         playbackStartTime = Date().timeIntervalSince1970 - clampedTime
@@ -222,7 +194,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
 
     func skipForward() {
         stop(clearSong: false)
-        
+
         if repeatMode == .repeatOne {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 self.play(song: self.songQueue[self.currentIndex], in: self.originalQueue, contextName: self.currentContextName)
@@ -265,16 +237,13 @@ class PlaybackViewModel: NSObject, ObservableObject {
         isShuffle.toggle()
         if isShuffle {
             shuffledQueue = originalQueue
-            // Fisher-Yates shuffle
+            // Fisher-Yates shuffle (with current song kept at index 0)
             for i in stride(from: shuffledQueue.count - 1, through: 1, by: -1) {
                 let j = Int.random(in: 0...i)
                 shuffledQueue.swapAt(i, j)
             }
-            if let current = currentSong {
-                // Ensure current song remains in place
-                if let currentIndexInShuffle = shuffledQueue.firstIndex(of: current) {
-                    shuffledQueue.swapAt(0, currentIndexInShuffle)
-                }
+            if let current = currentSong, let idx = shuffledQueue.firstIndex(of: current) {
+                shuffledQueue.swapAt(0, idx)
                 currentIndex = 0
             }
         } else {
@@ -297,6 +266,8 @@ class PlaybackViewModel: NSObject, ObservableObject {
             print("⏹ Repeat mode set to: Off")
         }
     }
+
+    // MARK: - Completion handling
 
     private func handlePlaybackCompletion() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -344,6 +315,8 @@ class PlaybackViewModel: NSObject, ObservableObject {
             }
         }
     }
+
+    // MARK: - Now Playing / Timer
 
     private func startTimer() {
         timer?.invalidate()

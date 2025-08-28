@@ -14,8 +14,8 @@ struct AlbumDetailView: View {
             if disc0 != disc1 {
                 return disc0 < disc1
             } else {
-                let track0 = $0.trackNumber ?? 0
-                let track1 = $1.trackNumber ?? 0
+                let track0 = $0.trackNumber ?? Int.max
+                let track1 = $1.trackNumber ?? Int.max
                 return track0 < track1
             }
         }
@@ -24,7 +24,7 @@ struct AlbumDetailView: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 14) {
-                ForEach(sortedSongs) { song in
+                ForEach(sortedSongs, id: \.url) { song in
                     SongRowButton(song: song, albumName: albumName, songs: sortedSongs)
                         .environmentObject(playbackVM)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -60,7 +60,7 @@ struct SongRowButton: View {
                 playbackVM.showPlayer = true
             } else {
                 print("🎵 Playing: \(song.title) from album: \(albumName)")
-                playbackVM.play(song: song, in: songs)
+                playbackVM.play(song: song, in: songs, contextName: albumName)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     playbackVM.showPlayer = true
                 }

@@ -1,79 +1,104 @@
+//
+//  AudioEngine.swift
+//  CloudTune
+//
+//  Created by Robert Houst on 8/28/25.
+//
+
 import AVFoundation
+import AudioToolbox   // for AudioComponentDescription & AU instantiate
 
 final class AudioEngine {
 
-    // 1) Core nodes live here (owned by AudioEngine)
+    // Core nodes
     let engine = AVAudioEngine()
     let player = AVAudioPlayerNode()
-    let eq = AVAudioUnitEQ(numberOfBands: 5) // we’ll wire EQManager to this node
-    let limiter = AVAudioUnitLimiter()       // safety against EQ boosts clipping
+    let eq = AVAudioUnitEQ(numberOfBands: 5)
 
-    // 2) Playback state (kept here, not in EQ manager)
+    // Optional limiter (Apple Peak Limiter AU). It's async-loaded.
+    private var limiterAU: AVAudioUnit?
+
+    // Playback state
     private var currentFile: AVAudioFile?
     private var playbackCompletion: (() -> Void)?
     private var activePlaybackID: UUID?
 
+    // Graph readiness (because limiter instantiation is async)
+    private var isGraphReady = false
+    private var readyCallbacks: [() -> Void] = []
+
     init() {
         configureSession()
-        configureGraph()
-        prepareAndStart()
+        configureGraph { [weak self] in
+            guard let self else { return }
+            self.prepareAndStart()
+            self.isGraphReady = true
+            // Flush any queued work (e.g., play calls that arrived early)
+            let pending = self.readyCallbacks
+            self.readyCallbacks.removeAll()
+            pending.forEach { $0() }
+        }
         setupInterruptions()
         setupRouteChange()
     }
 
     // MARK: - Public controls
 
-    func play(url: URL, id: UUID = UUID(), completion: (() -> Void)? = nil) throws {
-        activePlaybackID = id
-        playbackCompletion = completion
-
-        // Stop/reset before scheduling a new file
-        player.stop()
-        player.reset()
-
-        let file = try AVAudioFile(forReading: url)
-        currentFile = file
-
-        // Schedule entire file (simple path). For ultra-robustness, later replace
-        // with chunked scheduling on a background queue.
-        let startStamp = CACurrentMediaTime()
-        player.scheduleFile(file, at: nil) { [weak self] in
+    func play(url: URL, id: UUID = UUID(), completion: (() -> Void)? = nil) {
+        whenReady { [weak self] in
             guard let self else { return }
-            // Ignore if a newer play() superseded this
-            guard self.activePlaybackID == id else { return }
-            // Avoid early false positives (race with immediate pause/seek)
-            if CACurrentMediaTime() - startStamp < 0.5 { return }
-            DispatchQueue.main.async { self.playbackCompletion?() }
-        }
+            self.activePlaybackID = id
+            self.playbackCompletion = completion
 
-        if !engine.isRunning { try? engine.start() }
-        player.play()
+            self.player.stop()
+            self.player.reset()
+
+            do {
+                let file = try AVAudioFile(forReading: url)
+                self.currentFile = file
+
+                let startStamp = CACurrentMediaTime()
+                self.player.scheduleFile(file, at: nil) { [weak self] in
+                    guard let self else { return }
+                    guard self.activePlaybackID == id else { return }
+                    if CACurrentMediaTime() - startStamp < 0.5 { return }
+                    DispatchQueue.main.async { self.playbackCompletion?() }
+                }
+
+                if !self.engine.isRunning { try? self.engine.start() }
+                self.player.play()
+            } catch {
+                print("❌ AudioEngine.play: \(error.localizedDescription)")
+            }
+        }
     }
 
     func seek(to seconds: TimeInterval, completion: (() -> Void)? = nil) {
-        guard let file = currentFile else { return }
+        whenReady { [weak self] in
+            guard let self, let file = self.currentFile else { return }
 
-        let sr = file.processingFormat.sampleRate
-        let totalFrames = file.length
-        let duration = Double(totalFrames) / sr
-        let clamped = max(0, min(seconds, duration))
+            let sr = file.processingFormat.sampleRate
+            let totalFrames = file.length
+            let duration = Double(totalFrames) / sr
+            let clamped = max(0, min(seconds, duration))
 
-        let startFrame = AVAudioFramePosition(clamped * sr)
-        let framesLeft = AVAudioFrameCount(totalFrames - startFrame)
+            let startFrame = AVAudioFramePosition(clamped * sr)
+            let framesLeft = AVAudioFrameCount(totalFrames - startFrame)
 
-        player.stop()
-        player.reset()
-        file.framePosition = startFrame
+            self.player.stop()
+            self.player.reset()
+            file.framePosition = startFrame
 
-        let seekID = UUID()
-        activePlaybackID = seekID
+            let seekID = UUID()
+            self.activePlaybackID = seekID
 
-        player.scheduleSegment(file, startingFrame: startFrame, frameCount: framesLeft, at: nil) { [weak self] in
-            guard let self, self.activePlaybackID == seekID else { return }
-            DispatchQueue.main.async { completion?() }
+            self.player.scheduleSegment(file, startingFrame: startFrame, frameCount: framesLeft, at: nil) { [weak self] in
+                guard let self, self.activePlaybackID == seekID else { return }
+                DispatchQueue.main.async { completion?() }
+            }
+
+            self.player.play()
         }
-
-        player.play()
     }
 
     func pause()  { player.pause() }
@@ -82,7 +107,6 @@ final class AudioEngine {
     func stop() {
         player.stop()
         player.reset()
-        // keep engine running; starting/stopping engine itself can cause pops
         playbackCompletion = nil
         activePlaybackID = nil
         currentFile = nil
@@ -90,19 +114,54 @@ final class AudioEngine {
 
     // MARK: - Private setup
 
-    private func configureSession() {
-        let s = AVAudioSession.sharedInstance()
-        try? s.setCategory(.playback, mode: .default, options: [.allowBluetooth, .allowAirPlay])
-        try? s.setPreferredSampleRate(48_000)        // stable SR on iOS hardware
-        try? s.setPreferredIOBufferDuration(0.005)   // ~5ms I/O buffer (low latency)
-        try? s.setActive(true)
+    private func whenReady(_ work: @escaping () -> Void) {
+        if isGraphReady { work() } else { readyCallbacks.append(work) }
     }
 
-    private func configureGraph() {
-        // Attach once, don’t rewire mid-playback
-        [player, eq, limiter].forEach(engine.attach)
+    private func configureSession() {
+        let session = AVAudioSession.sharedInstance()
 
-        // Preconfigure EQ bands (neutral); EQManager will tune these later
+        // 1) Always deactivate before reconfiguring (resets bad state)
+        try? session.setActive(false, options: .notifyOthersOnDeactivation)
+
+        // 2) Choose a *simple, valid* category for playback-only
+        //    - Don’t request .allowBluetooth with .playback
+        //    - AirPlay selection does not require .allowAirPlay in most cases
+        do {
+            try session.setCategory(.playback, mode: .default, options: [])
+            // If you *must* mix with other audio, add: options: [.mixWithOthers]
+        } catch {
+            print("❌ setCategory(.playback) failed: \(error.localizedDescription)")
+        }
+
+        // 3) Ask for reasonable prefs (these are *preferences*, not guarantees)
+        //    Keep them modest to avoid -50 on some routes/devices.
+        do {
+            // Prefer 48k, but don’t hard-fail if unsupported
+            try? session.setPreferredSampleRate(48_000)
+            // 10 ms is a safe, low-latency target; 5 ms is often too aggressive
+            try? session.setPreferredIOBufferDuration(0.010)
+        }
+
+        // 4) Activate *after* category & prefs
+        do {
+            try session.setActive(true)
+        } catch {
+            print("❌ setActive(true) failed: \(error.localizedDescription)")
+        }
+
+        // 5) Log what we actually got (useful when debugging -50)
+        let sr = session.sampleRate
+        let dur = session.ioBufferDuration
+        let route = session.currentRoute
+        print("🎧 Session active. sr=\(sr)Hz io=\(Int(dur * 1000))ms route=\(route.outputs.first?.portType.rawValue ?? "unknown")")
+    }
+
+    private func configureGraph(onReady: @escaping () -> Void) {
+        // Attach nodes we already have
+        [player, eq].forEach(engine.attach)
+
+        // Preconfigure EQ bands (neutral). EQManager will set gains later.
         let freqs: [Float] = [60, 250, 1000, 4000, 8000]
         for (i, f) in freqs.enumerated() where i < eq.bands.count {
             let b = eq.bands[i]
@@ -113,19 +172,55 @@ final class AudioEngine {
             b.bypass = false
         }
 
-        // Keep a limiter near output to avoid clipping on user boosts
-        limiter.preGain = 0
-
-        // Connect with the device/output format so the engine doesn’t resample later
+        // We’ll try to insert a Peak Limiter AU between EQ and MainMixer.
+        // Because instantiate is async, we build connections in its callback.
         let fmt = engine.outputNode.outputFormat(forBus: 0)
-        engine.connect(player,  to: eq,      format: fmt)
-        engine.connect(eq,      to: limiter, format: fmt)
-        engine.connect(limiter, to: engine.mainMixerNode, format: fmt)
+
+        instantiatePeakLimiter { [weak self] limiter in
+            guard let self else { return }
+
+            if let limiter {
+                self.limiterAU = limiter
+                self.engine.attach(limiter)
+
+                self.engine.connect(self.player,  to: self.eq,      format: fmt)
+                self.engine.connect(self.eq,      to: limiter,       format: fmt)
+                self.engine.connect(limiter,      to: self.engine.mainMixerNode, format: fmt)
+
+                // Optional: you can set limiter parameters via AudioUnit APIs if needed.
+            } else {
+                // Fallback: no limiter, direct to mixer.
+                self.engine.connect(self.player, to: self.eq, format: fmt)
+                self.engine.connect(self.eq,     to: self.engine.mainMixerNode, format: fmt)
+            }
+
+            onReady()
+        }
+    }
+
+    /// Instantiate Apple's Peak Limiter AU. Returns nil on failure.
+    private func instantiatePeakLimiter(completion: @escaping (AVAudioUnit?) -> Void) {
+        var desc = AudioComponentDescription(
+            componentType: kAudioUnitType_Effect,
+            componentSubType: kAudioUnitSubType_PeakLimiter,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+
+        AVAudioUnit.instantiate(with: desc, options: []) { unit, error in
+            if let unit {
+                completion(unit)
+            } else {
+                if let error { print("⚠️ PeakLimiter AU instantiate failed: \(error.localizedDescription)") }
+                completion(nil)
+            }
+        }
     }
 
     private func prepareAndStart() {
-        engine.prepare()          // alloc render resources
-        try? engine.start()       // keep running to avoid first-note glitch
+        engine.prepare()        // pre-alloc render resources
+        try? engine.start()     // keep running to avoid first-note glitch
     }
 
     private func setupInterruptions() {
@@ -143,7 +238,6 @@ final class AudioEngine {
             case .began:
                 self.player.pause()
             case .ended:
-                // If the system says we can resume, resume playback
                 let optsVal = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
                 let opts = AVAudioSession.InterruptionOptions(rawValue: optsVal)
                 if opts.contains(.shouldResume) { self.player.play() }
@@ -158,7 +252,6 @@ final class AudioEngine {
             object: AVAudioSession.sharedInstance(),
             queue: .main
         ) { [weak self] _ in
-            // Re-start engine if output route changed and engine stopped
             guard let self else { return }
             if !self.engine.isRunning { try? self.engine.start() }
         }

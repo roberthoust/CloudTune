@@ -29,11 +29,22 @@ class SongLoader {
 
         for fileURL in files where allowedExtensions.contains(fileURL.pathExtension.lowercased()) {
             let rawSong = extractMetadata(from: fileURL)
-            print("🔍 Extracted Raw Metadata — Title: \(rawSong.title), Artist: \(rawSong.artist ?? "nil"), Album: \(rawSong.album ?? "nil")")
+            print("🔍 Extracted Raw Metadata — Title: \(rawSong.title), Artist: \(rawSong.artist ?? "nil"), Album: \(rawSong.album ?? "nil"), Track: \(rawSong.trackNumber ?? 0)")
 
             do {
                 var enriched = try await MetadataEnricher.enrich(rawSong)
-                print("✨ Enriched Metadata — Title: \(enriched.title), Artist: \(enriched.artist), Album: \(enriched.album)")
+                print("""
+                ✨ Enriched Metadata
+                   Title:   \(enriched.title)
+                   Artist:  \(enriched.artist)
+                   Album:   \(enriched.album)
+                   Year:    \(enriched.year)
+                   Track:   \(enriched.trackNumber) / Disc: \(enriched.discNumber)
+                   Duration:\(String(format: "%.1f sec", enriched.duration))
+                   Genre:   \(enriched.genre ?? "N/A")
+                   MBID:    \(enriched.musicBrainzReleaseID ?? "N/A")
+                   Link:    \(enriched.externalURL ?? "N/A")
+                """)
 
                 // Try fetching artwork from API as first priority
                 if enriched.artwork == nil {
@@ -63,7 +74,7 @@ class SongLoader {
                 if fallback.artwork == nil {
                     fallback.artwork = fallbackArtwork
                 }
-                print("📦 Fallback Metadata — Title: \(fallback.title), Artist: \(fallback.artist), Album: \(fallback.album)")
+                print("📦 Fallback Metadata — Title: \(fallback.title), Artist: \(fallback.artist), Album: \(fallback.album), Track: \(fallback.trackNumber ?? 0)")
                 songs.append(fallback)
             }
         }
@@ -107,75 +118,103 @@ class SongLoader {
         let duration = CMTimeGetSeconds(asset.duration)
         var trackNumber: Int? = nil
 
-for meta in asset.commonMetadata {
-    switch meta.commonKey?.rawValue {
-    case "title":
-        title = meta.stringValue ?? title
-    case "artist":
-        artist = meta.stringValue
-    case "albumName":
-        album = meta.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-    case "artwork":
-        artworkData = meta.dataValue
-    case "genre":
-        genre = meta.stringValue
-    case "trackNumber":
-        if let number = meta.numberValue?.intValue {
-            trackNumber = number
-        } else if let stringValue = meta.stringValue {
-            let parts = stringValue.components(separatedBy: "/")
-            if let first = parts.first, let num = Int(first.trimmingCharacters(in: .whitespaces)) {
-                trackNumber = num
+        // Common tag pass
+        for meta in asset.commonMetadata {
+            switch meta.commonKey?.rawValue {
+            case "title":
+                title = meta.stringValue ?? title
+            case "artist":
+                artist = meta.stringValue
+            case "albumName":
+                album = meta.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            case "artwork":
+                artworkData = meta.dataValue
+            case "genre":
+                genre = meta.stringValue
+            case "trackNumber":
+                if let number = meta.numberValue?.intValue, (1...99).contains(number) {
+                    trackNumber = number
+                } else if let stringValue = meta.stringValue {
+                    let parts = stringValue.components(separatedBy: "/")
+                    if let first = parts.first,
+                       let num = Int(first.trimmingCharacters(in: .whitespaces)),
+                       (1...99).contains(num) {
+                        trackNumber = num
+                    }
+                }
+            default:
+                break
             }
         }
-    default:
-        break
-    }
-}
 
-// MARK: Fallback: Look through all metadata formats for track number
-if trackNumber == nil {
-    for format in asset.availableMetadataFormats {
-        for item in asset.metadata(forFormat: format) {
-            if let key = item.commonKey?.rawValue, key == "trackNumber", let num = item.numberValue?.intValue {
-                trackNumber = num
+        // MARK: Strict fallback: only accept track numbers from known keys/IDs
+        if trackNumber == nil {
+            let allowedIDs: Set<String> = [
+                AVMetadataIdentifier.id3MetadataTrackNumber.rawValue,   // "TRCK"
+                AVMetadataIdentifier.iTunesMetadataTrackNumber.rawValue // "trkn"
+            ]
+
+            func parseTrack(_ item: AVMetadataItem) -> Int? {
+                // Prefer numberValue if sane
+                if let n = item.numberValue?.intValue, (1...99).contains(n) { return n }
+                // Parse string forms like "05/12", "05", "5 of 12"
+                if let s = item.stringValue {
+                    let cleaned = s.replacingOccurrences(of: "of", with: "/")
+                    let first = cleaned
+                        .components(separatedBy: CharacterSet(charactersIn: "/ -_"))
+                        .first?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if let n = Int(first), (1...99).contains(n) { return n }
+                }
+                return nil
             }
 
-            if let identifier = item.identifier?.rawValue.lowercased(),
-               identifier.contains("track") || identifier.contains("trck"),
-               let num = item.numberValue?.intValue {
-                trackNumber = num
-            }
+            outer: for format in asset.availableMetadataFormats {
+                for item in asset.metadata(forFormat: format) {
+                    let isCommonTrack = (item.commonKey?.rawValue == "trackNumber")
+                    let isAllowedID = item.identifier.map { allowedIDs.contains($0.rawValue) } ?? false
+                    guard isCommonTrack || isAllowedID else { continue }
 
-            if let str = item.stringValue,
-               let num = Int(str.components(separatedBy: "/").first ?? "") {
-                trackNumber = num
+                    if let n = parseTrack(item) {
+                        trackNumber = n
+                        break outer
+                    }
+                }
             }
         }
-    }
-}
 
-        // Fallback for FLAC (or bad metadata)
+        // FINAL sanity: discard absurd values (e.g., year=2015 accidentally parsed upstream)
+        if let tn = trackNumber, !(1...99).contains(tn) {
+            trackNumber = nil
+        }
+
+        // Filename rescue (e.g., "01 - Title", "1. Title", "01_Title")
+        if trackNumber == nil {
+            let leadingDigits = filename.prefix { $0.isNumber }
+            if let n = Int(leadingDigits), (1...99).contains(n) {
+                trackNumber = n
+            }
+        }
+
+        // Fallback for FLAC (or bad metadata): "Artist - Title"
         if (artist == nil || artist!.isEmpty), fileURL.pathExtension.lowercased() == "flac" {
-            let components = filename.components(separatedBy:   " - ")
+            let components = filename.components(separatedBy: " - ")
             if components.count == 2 {
                 artist = components[0].trimmingCharacters(in: .whitespaces)
                 title = components[1].trimmingCharacters(in: .whitespaces)
             }
         }
 
-print("🎯 Track #\(trackNumber ?? 0) for: \(title)")
-return Song(
-    id: Song.generateStableID(from: fileURL),
-    title: title,
-    artist: artist?.isEmpty == false ? artist! : folderName,
-    album: album?.isEmpty == false ? album! : "No Album",
-    duration: duration,
-    url: fileURL,
-    artwork: artworkData,
-    genre: genre?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-    trackNumber: trackNumber ?? 0
-)
+        return Song(
+            id: Song.generateStableID(from: fileURL),
+            title: title,
+            artist: artist?.isEmpty == false ? artist! : folderName,
+            album: album?.isEmpty == false ? album! : "No Album",
+            duration: duration,
+            url: fileURL,
+            artwork: artworkData,
+            genre: genre?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            trackNumber: trackNumber ?? 0
+        )
     }
-    
 }

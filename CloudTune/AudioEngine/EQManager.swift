@@ -1,203 +1,38 @@
 import AVFoundation
-import Foundation
 
-class EQManager {
+final class EQManager {
     static let shared = EQManager()
 
-    private let engine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
-    private let eq: AVAudioUnitEQ
-    private var bands: [AVAudioUnitEQFilterParameters] = []
+    // We don’t own the engine. Inject the EQ node we want to control.
+    private weak var eqNode: AVAudioUnitEQ?
+    private(set) var bandFrequencies: [Float] = [60, 250, 1000, 4000, 8000]
 
-    private var currentFile: AVAudioFile?
-    private var currentSong: Song?
-    private var playbackCompletionHandler: (() -> Void)?
-    private var activePlaybackID: UUID?
-    private var currentSeekID: UUID?
-    private var isSeeking = false
-    private(set) var isPlaying: Bool = false
+    private init() {}
 
-    private var lastPlayStartTime: TimeInterval = 0
-
-    let bandFrequencies: [Float] = [60, 250, 1000, 4000, 8000]
-
-    var lastUsedPresetName: String {
-        UserDefaults.standard.string(forKey: lastUsedNameKey) ?? "Flat"
-    }
-
-    var activePresetName: String {
-        let gains = getCurrentGains()
-        if gains == builtInPresets["Flat"] {
-            return "OFF"
-        }
-        if let custom = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] {
-            for (name, storedGains) in custom where storedGains == gains {
-                return name
-            }
-        }
-        for (name, builtInGains) in builtInPresets where builtInGains == gains {
-            return name
-        }
-        return "Custom"
-    }
-
-    private init() {
-        eq = AVAudioUnitEQ(numberOfBands: bandFrequencies.count)
-        bands = eq.bands
-
-        for (i, freq) in bandFrequencies.enumerated() {
-            bands[i].filterType = .parametric
-            bands[i].frequency = freq
-            bands[i].bandwidth = 0.5
-            bands[i].gain = 0
-            bands[i].bypass = false
-        }
-
-        engine.attach(playerNode)
-        engine.attach(eq)
-        engine.connect(playerNode, to: eq, format: nil)
-        engine.connect(eq, to: engine.mainMixerNode, format: nil)
-
+    // Call this once after AudioEngine is created
+    func attach(eq: AVAudioUnitEQ, frequencies: [Float]? = nil) {
+        self.eqNode = eq
+        if let f = frequencies, f.count == eq.bands.count { self.bandFrequencies = f }
+        // Apply last-used gains on app start
         setBands(loadLastUsed())
-
-        do {
-            try engine.start()
-            print("✅ Audio engine started successfully")
-        } catch {
-            print("❌ Failed to start audio engine: \(error)")
-        }
     }
 
-    func start() throws {
-        // You can keep this for compatibility, but engine is started in init now
-        if !engine.isRunning {
-            try engine.start()
-        }
-    }
-
-    func play(song: Song, id playbackID: UUID, completion: @escaping (UUID) -> Void) throws {
-        activePlaybackID = playbackID
-        playbackCompletionHandler = { completion(playbackID) }
-
-        let file = try AVAudioFile(forReading: song.url)
-        currentFile = file
-        currentSong = song
-
-        playerNode.stop()      // Stop current playback before scheduling new
-        playerNode.reset()     // Reset scheduled buffers
-
-        print("🧪 EQManager — scheduling full file")
-        let playStartTime = Date().timeIntervalSince1970
-        self.lastPlayStartTime = playStartTime
-        isSeeking = false
-
-        playerNode.scheduleFile(file, at: nil) { [weak self] in
-            guard let self = self else { return }
-            let now = Date().timeIntervalSince1970
-            let elapsed = now - playStartTime
-
-            if self.isSeeking || self.activePlaybackID != playbackID {
-                return
-            }
-
-            if elapsed < 1.5 {
-                print("⚠️ Skipped too soon after playback start (\(elapsed)s) — ignoring completion.")
-                return
-            }
-
-            DispatchQueue.main.async {
-                print("🎯 Inside EQManager — about to call completion closure")
-                self.playbackCompletionHandler?()
-                self.playbackCompletionHandler = nil
-            }
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            self.playerNode.play()
-        }
-        isPlaying = true
-    }
-
-    func seek(to time: TimeInterval, completion: (() -> Void)? = nil) {
-        guard let file = currentFile else {
-            print("❌ No active file or song to seek.")
-            return
-        }
-
-        isSeeking = true
-        let seekID = UUID()
-        activePlaybackID = seekID
-
-        let sampleRate = file.processingFormat.sampleRate
-        let totalFrames = file.length
-        let songDuration = Double(totalFrames) / sampleRate
-        let safeTime = min(max(0, time), songDuration)
-        let startFrame = AVAudioFramePosition(safeTime * sampleRate)
-        let framesToPlay = AVAudioFrameCount(totalFrames - startFrame)
-
-        file.framePosition = startFrame
-        playerNode.stop()
-        playerNode.reset()
-
-        playerNode.scheduleSegment(file, startingFrame: startFrame, frameCount: framesToPlay, at: nil) {
-            guard self.activePlaybackID == seekID else {
-                print("🛑 Outdated seekID ignored.")
-                return
-            }
-
-            DispatchQueue.main.async {
-                print("✅ Segment finished — treating as completion")
-                self.playbackCompletionHandler?()
-                self.playbackCompletionHandler = nil
-                completion?()
-            }
-        }
-
-        playerNode.play()
-        isPlaying = true
-    }
-
-    func pause() {
-        playerNode.pause()
-        isPlaying = false
-    }
-
-    func resume() {
-        playerNode.play()
-        isPlaying = true
-    }
-
-    func stop() {
-        playerNode.reset()
-        playerNode.stop()
-        // Don't stop engine here to avoid lag, only stop playerNode
-        // engine.stop()
-        isPlaying = false
-
-        playbackCompletionHandler = nil
-        activePlaybackID = nil
-        currentSeekID = nil
-        isSeeking = false
-
-        currentFile = nil
-        currentSong = nil
-
-        print("🛑 EQManager — playback stopped and cleared.")
-    }
-
-    // MARK: - EQ Management
+    // MARK: - Band control
 
     func setBands(_ gains: [Float]) {
-        for (i, gain) in gains.enumerated() where i < bands.count {
-            bands[i].gain = gain
+        guard let eq = eqNode else { return }
+        for (i, g) in gains.enumerated() where i < eq.bands.count {
+            eq.bands[i].gain = g
         }
+        saveLastUsed(gains, presetName: nil)
     }
 
     func getCurrentGains() -> [Float] {
-        bands.map { $0.gain }
+        guard let eq = eqNode else { return Array(repeating: 0, count: bandFrequencies.count) }
+        return eq.bands.prefix(bandFrequencies.count).map { $0.gain }
     }
 
-    // MARK: - Presets
+    // MARK: - Presets (unchanged logic, just without playback concerns)
 
     private let builtInPresets: [String: [Float]] = [
         "Flat": [0, 0, 0, 0, 0],
@@ -206,6 +41,25 @@ class EQManager {
         "Treble Boost": [-4, -2, 0, 2, 5],
         "Lo-Fi": [-8, -4, 0, 4, 8]
     ]
+
+    private let presetsKey = "EQPresets"
+    private let customNamesKey = "CustomPresetNames"
+    private let lastUsedGainsKey = "LastUsedEQ"
+    private let lastUsedNameKey = "LastUsedEQName"
+
+    var lastUsedPresetName: String {
+        UserDefaults.standard.string(forKey: lastUsedNameKey) ?? "Flat"
+    }
+
+    var activePresetName: String {
+        let gains = getCurrentGains()
+        if gains == builtInPresets["Flat"] { return "OFF" }
+        if let custom = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] {
+            for (name, storedGains) in custom where storedGains == gains { return name }
+        }
+        for (name, builtInGains) in builtInPresets where builtInGains == gains { return name }
+        return "Custom"
+    }
 
     func loadPreset(named name: String) -> [Float] {
         if let custom = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]],
@@ -224,13 +78,13 @@ class EQManager {
     }
 
     func deleteCustomPreset(named name: String) {
-        var allPresets = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] ?? [:]
-        allPresets.removeValue(forKey: name)
-        UserDefaults.standard.set(allPresets, forKey: presetsKey)
+        var all = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] ?? [:]
+        all.removeValue(forKey: name)
+        UserDefaults.standard.set(all, forKey: presetsKey)
 
-        var savedNames = loadCustomPresetNames()
-        savedNames.removeAll { $0 == name }
-        UserDefaults.standard.set(savedNames, forKey: customNamesKey)
+        var names = loadCustomPresetNames()
+        names.removeAll { $0 == name }
+        UserDefaults.standard.set(names, forKey: customNamesKey)
     }
 
     func loadCustomPresetNames() -> [String] {
@@ -245,17 +99,9 @@ class EQManager {
         }
     }
 
-    // MARK: - Last Used
-
-    private let presetsKey = "EQPresets"
-    private let customNamesKey = "CustomPresetNames"
-    private let lastUsedGainsKey = "LastUsedEQ"
-    private let lastUsedNameKey = "LastUsedEQName"
-
     func saveLastUsed(_ gains: [Float], presetName: String?) {
         guard gains.count == bandFrequencies.count else { return }
         UserDefaults.standard.set(gains, forKey: lastUsedGainsKey)
-
         if let name = presetName {
             UserDefaults.standard.set(name, forKey: lastUsedNameKey)
         } else {
