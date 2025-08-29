@@ -7,10 +7,11 @@
 
 import AVFoundation
 import AudioToolbox   // for AudioComponentDescription & AU instantiate
+import Accelerate     // vDSP peak scan for the guard tap
 
 final class AudioEngine {
 
-    // Core nodes
+    // MARK: Core nodes
     let engine = AVAudioEngine()
     let player = AVAudioPlayerNode()
     let eq = AVAudioUnitEQ(numberOfBands: 5)
@@ -18,7 +19,12 @@ final class AudioEngine {
     // Optional limiter (Apple Peak Limiter AU). It's async-loaded.
     private var limiterAU: AVAudioUnit?
 
-    // Playback state
+    // MARK: Safe output (lawsuit guard)
+    // We cap overall mixer volume and install a tiny “peak guard” tap.
+    private let outputVolumeCap: Float = 0.82
+    private var peakTapInstalled = false
+
+    // MARK: Playback state
     private var currentFile: AVAudioFile?
     private var playbackCompletion: (() -> Void)?
     private var activePlaybackID: UUID?
@@ -61,6 +67,7 @@ final class AudioEngine {
                 self.player.scheduleFile(file, at: nil) { [weak self] in
                     guard let self else { return }
                     guard self.activePlaybackID == id else { return }
+                    // ignore spurious early completions
                     if CACurrentMediaTime() - startStamp < 0.5 { return }
                     DispatchQueue.main.async { self.playbackCompletion?() }
                 }
@@ -110,6 +117,7 @@ final class AudioEngine {
         playbackCompletion = nil
         activePlaybackID = nil
         currentFile = nil
+        // keep engine running to avoid first-note glitch on next start
     }
 
     // MARK: - Private setup
@@ -121,36 +129,26 @@ final class AudioEngine {
     private func configureSession() {
         let session = AVAudioSession.sharedInstance()
 
-        // 1) Always deactivate before reconfiguring (resets bad state)
+        // Deactivate before reconfiguring—avoids -50 from stale state.
         try? session.setActive(false, options: .notifyOthersOnDeactivation)
 
-        // 2) Choose a *simple, valid* category for playback-only
-        //    - Don’t request .allowBluetooth with .playback
-        //    - AirPlay selection does not require .allowAirPlay in most cases
         do {
+            // Plain playback category: most stable across routes
             try session.setCategory(.playback, mode: .default, options: [])
-            // If you *must* mix with other audio, add: options: [.mixWithOthers]
         } catch {
             print("❌ setCategory(.playback) failed: \(error.localizedDescription)")
         }
 
-        // 3) Ask for reasonable prefs (these are *preferences*, not guarantees)
-        //    Keep them modest to avoid -50 on some routes/devices.
-        do {
-            // Prefer 48k, but don’t hard-fail if unsupported
-            try? session.setPreferredSampleRate(48_000)
-            // 10 ms is a safe, low-latency target; 5 ms is often too aggressive
-            try? session.setPreferredIOBufferDuration(0.010)
-        }
+        // Preferences (not guarantees). Keep modest.
+        try? session.setPreferredSampleRate(48_000)
+        try? session.setPreferredIOBufferDuration(0.010) // ~10ms
 
-        // 4) Activate *after* category & prefs
         do {
             try session.setActive(true)
         } catch {
             print("❌ setActive(true) failed: \(error.localizedDescription)")
         }
 
-        // 5) Log what we actually got (useful when debugging -50)
         let sr = session.sampleRate
         let dur = session.ioBufferDuration
         let route = session.currentRoute
@@ -158,10 +156,10 @@ final class AudioEngine {
     }
 
     private func configureGraph(onReady: @escaping () -> Void) {
-        // Attach nodes we already have
+        // Attach core nodes once
         [player, eq].forEach(engine.attach)
 
-        // Preconfigure EQ bands (neutral). EQManager will set gains later.
+        // Flat EQ bands; UI will adjust gains.
         let freqs: [Float] = [60, 250, 1000, 4000, 8000]
         for (i, f) in freqs.enumerated() where i < eq.bands.count {
             let b = eq.bands[i]
@@ -172,10 +170,9 @@ final class AudioEngine {
             b.bypass = false
         }
 
-        // We’ll try to insert a Peak Limiter AU between EQ and MainMixer.
-        // Because instantiate is async, we build connections in its callback.
         let fmt = engine.outputNode.outputFormat(forBus: 0)
 
+        // Try to insert Apple Peak Limiter (nice-to-have).
         instantiatePeakLimiter { [weak self] limiter in
             guard let self else { return }
 
@@ -184,15 +181,19 @@ final class AudioEngine {
                 self.engine.attach(limiter)
 
                 self.engine.connect(self.player,  to: self.eq,      format: fmt)
-                self.engine.connect(self.eq,      to: limiter,       format: fmt)
+                self.engine.connect(self.eq,      to: limiter,      format: fmt)
                 self.engine.connect(limiter,      to: self.engine.mainMixerNode, format: fmt)
-
-                // Optional: you can set limiter parameters via AudioUnit APIs if needed.
             } else {
-                // Fallback: no limiter, direct to mixer.
+                // Fallback path: player → eq → mixer
                 self.engine.connect(self.player, to: self.eq, format: fmt)
                 self.engine.connect(self.eq,     to: self.engine.mainMixerNode, format: fmt)
             }
+
+            // ---- SAFETY GUARD (works everywhere) ----
+            // 1) Hard cap the main mixer output (fixed multiplier)
+            self.engine.mainMixerNode.outputVolume = min(self.engine.mainMixerNode.outputVolume, self.outputVolumeCap)
+            // 2) Install a tiny peak detector that gently ducks on near-clips
+            self.installPeakGuardTap()
 
             onReady()
         }
@@ -254,6 +255,48 @@ final class AudioEngine {
         ) { [weak self] _ in
             guard let self else { return }
             if !self.engine.isRunning { try? self.engine.start() }
+        }
+    }
+
+    // MARK: - Peak Guard Tap (soft limiter-ish)
+
+    /// Installs a very cheap peak detector on the main mixer that gently ducks
+    /// output volume if instantaneous peaks approach full scale (0 dBFS).
+    private func installPeakGuardTap() {
+        guard !peakTapInstalled else { return }
+        peakTapInstalled = true
+
+        let mixer = engine.mainMixerNode
+        let fmt = engine.outputNode.outputFormat(forBus: 0)
+        let bufferSize: AVAudioFrameCount = 1024  // ~21ms @ 48k — responsive but cheap
+
+        mixer.installTap(onBus: 0, bufferSize: bufferSize, format: fmt) { [weak self] buffer, _ in
+            guard let self = self else { return }
+            // Only operate if we have float channels
+            guard let ch0 = buffer.floatChannelData?.pointee else { return }
+            let n = Int(buffer.frameLength)
+            if n == 0 { return }
+
+            // Peak magnitude for this buffer (channel 0 is enough for guard)
+            var peak: Float = 0
+            vDSP_maxmgv(ch0, 1, &peak, vDSP_Length(n))
+
+            // If peak is hot, gently duck the mixer (soft, fast reaction).
+            // We keep a ceiling of outputVolumeCap to avoid slow drift upward.
+            if peak > 0.89 {
+                DispatchQueue.main.async {
+                    let cur = mixer.outputVolume
+                    // small 3% step down
+                    mixer.outputVolume = max(0.0, min(self.outputVolumeCap, cur * 0.97))
+                }
+            } else if peak < 0.55 {
+                // allow a very slow recovery toward the cap to avoid permanent attenuation
+                DispatchQueue.main.async {
+                    let cur = mixer.outputVolume
+                    let target = self.outputVolumeCap
+                    mixer.outputVolume = min(target, cur + 0.0015) // slow rise
+                }
+            }
         }
     }
 }
