@@ -15,7 +15,7 @@ enum RepeatMode {
 
 class PlaybackViewModel: NSObject, ObservableObject {
     // 🔁 Engine that owns the player/graph.
-    private let audio = AudioEngine()
+    private let audio = AudioEngine.shared
 
     @Published var currentSong: Song?
     @Published var isPlaying: Bool = false
@@ -183,6 +183,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
                 } else if BookmarkStore.shared.beginAccessIfBookmarked(parentOf: s.url) {
                     // We started a new scope from a bookmark; fine for this session.
                     print("🔐 Started scope for: \(parentName)")
+                    self.stopSecurityScope = { BookmarkStore.shared.endAccess(forFolderContaining: s.url) }
                 } else {
                     print("⚠️ External location without bookmark/scope. Playback may fail.")
                 }
@@ -224,7 +225,9 @@ class PlaybackViewModel: NSObject, ObservableObject {
                 print("🛑 Completion ignored — playback already stopped.")
                 return
             }
-            self.handleSongCompletion()
+
+            // Use the helper that also ignores ultra-early engine priming completions
+            self.handlePlaybackCompletion()
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -249,6 +252,10 @@ class PlaybackViewModel: NSObject, ObservableObject {
         // Close any active security scope for the current song's folder.
         stopSecurityScope?()
         stopSecurityScope = nil
+
+        // Stop the dispatch timer driving UI updates
+        timerSrc?.cancel()
+        timerSrc = nil
 
         // Invalidate token so late completions from the engine are ignored
         playToken = UUID()
@@ -439,14 +446,36 @@ class PlaybackViewModel: NSObject, ObservableObject {
 
     // MARK: - Now Playing / Timer
 
+    private var timerSrc: DispatchSourceTimer?
+    private var lastPushedTime: Double = -1
+
     private func startTimer() {
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
+        timerSrc?.cancel()
+        let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        t.schedule(deadline: .now(), repeating: .milliseconds(500), leeway: .milliseconds(50))
+        t.setEventHandler { [weak self] in
             guard let self = self else { return }
             let elapsed = Date().timeIntervalSince1970 - self.playbackStartTime
-            self.currentTime = min(elapsed, self.duration)
-            self.updateNowPlayingElapsedTime()
+            let clamped = min(elapsed, self.duration)
+            // Only push if it moved ≥ 0.25s to avoid UI churn
+            if abs(clamped - self.lastPushedTime) >= 0.25 {
+                self.lastPushedTime = clamped
+                DispatchQueue.main.async {
+                    self.currentTime = clamped
+                    self.updateNowPlayingElapsedTimeThrottled()
+                }
+            }
         }
+        timerSrc = t
+        t.resume()
+    }
+
+    private var lastNPUpdate: CFTimeInterval = 0
+    private func updateNowPlayingElapsedTimeThrottled() {
+        let now = CACurrentMediaTime()
+        guard now - lastNPUpdate > 0.5 else { return }
+        lastNPUpdate = now
+        MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
     }
 
     private func updateNowPlayingInfo(for song: Song) {

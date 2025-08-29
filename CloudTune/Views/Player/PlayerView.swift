@@ -6,8 +6,21 @@ struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var showMoreActions = false
-    @State private var showAddToPlaylistSheet = false
-    @State private var showEQSheet = false
+    @State private var activeSheet: ActiveSheet?
+
+    enum ActiveSheet: Identifiable {
+        case eq
+        case addToPlaylist(Song)
+
+        var id: Int {
+            switch self {
+            case .eq:
+                return 0
+            case .addToPlaylist(let song):
+                return song.id.hashValue
+            }
+        }
+    }
 
     private func formatTime(_ seconds: Double) -> String {
         let mins = Int(seconds) / 60
@@ -134,7 +147,7 @@ struct PlayerView: View {
 
             // EQ Status Label (Tappable)
             Button(action: {
-                showEQSheet = true
+                activeSheet = .eq
             }) {
                 Text("EQ: \(EQManager.shared.activePresetName.uppercased())")
                     .font(.footnote)
@@ -171,12 +184,9 @@ struct PlayerView: View {
                     .animation(.easeInOut(duration: 0.2), value: playbackVM.repeatMode)
                 }
 
-                Button(action: { showEQSheet = true }) {
+                Button(action: { activeSheet = .eq }) {
                     Image(systemName: "slider.horizontal.3")
                         .font(.title3)
-                }
-                .sheet(isPresented: $showEQSheet) {
-                    EQSettingsView()
                 }
             }
             .padding(.top, 4)
@@ -190,7 +200,7 @@ struct PlayerView: View {
         .confirmationDialog("More Actions", isPresented: $showMoreActions, titleVisibility: .visible) {
             if let current = playbackVM.currentSong {
                 Button("Add to Playlist", systemImage: "text.badge.plus") {
-                    showAddToPlaylistSheet = true
+                    activeSheet = .addToPlaylist(current)
                 }
 
             }
@@ -199,9 +209,12 @@ struct PlayerView: View {
                 showMoreActions = false
             }
         }
-        .sheet(isPresented: $showAddToPlaylistSheet) {
-            if let current = playbackVM.currentSong {
-                AddToPlaylistSheet(song: current, selectedPlaylist: .constant(nil))
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .eq:
+                EQSettingsView()
+            case .addToPlaylist(let song):
+                AddToPlaylistSheet(song: song, selectedPlaylist: .constant(nil))
                     .environmentObject(playlistVM)
                     .environmentObject(playbackVM)
             }

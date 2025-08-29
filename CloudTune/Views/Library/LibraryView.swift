@@ -3,6 +3,7 @@ import SwiftUI
 struct LibraryView: View {
     @EnvironmentObject var libraryVM: LibraryViewModel
     @EnvironmentObject var importState: ImportState
+
     @State private var showFolderPicker = false
     @State private var showFolderManager = false
 

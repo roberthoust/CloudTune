@@ -1,64 +1,73 @@
 import Foundation
 
-/// Lightweight persistence helpers for small JSON payloads stored in
-/// the app's Documents directory. Designed to be side‑effect free
-/// (no logging), atomic, and simple.
-struct FilePersistence {
-    // MARK: Filenames
-    private enum Store: String { case savedFolders = "SavedFolders.json", library = "Library.json", playlists = "playlists.json" }
-
-    // MARK: URL helpers
-    private static func url(for store: Store) -> URL? {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
-            .first?.appendingPathComponent(store.rawValue)
+enum FP { // centralize queue + debounce
+    static let ioQ = DispatchQueue(label: "io.file.persistence", qos: .utility)
+    static func debounce(key: String, delay: TimeInterval, perform: @escaping () -> Void) {
+        struct Token { static var work = [String: DispatchWorkItem]() }
+        Token.work[key]?.cancel()
+        let item = DispatchWorkItem(block: perform)
+        Token.work[key] = item
+        ioQ.asyncAfter(deadline: .now() + delay, execute: item)
     }
+}
 
-    // MARK: Generic read/write
-    @discardableResult
-    private static func write<T: Encodable>(_ value: T, to store: Store) -> Bool {
-        guard let u = url(for: store) else { return false }
-        do {
-            let data = try JSONEncoder().encode(value)
-            try data.write(to: u, options: [.atomic])
-            return true
-        } catch {
-            return false
+struct FilePersistence {
+    static let folderListKey = "SavedFolders.json"
+    static let libraryKey    = "Library.json"
+    static let playlistsKey  = "playlists.json"
+
+    static var docs: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first! }
+    static var savedFoldersURL: URL { docs.appendingPathComponent(folderListKey) }
+    static var libraryURL: URL { docs.appendingPathComponent(libraryKey) }
+    static var playlistsURL: URL { docs.appendingPathComponent(playlistsKey) }
+
+    // MARK: Folder list (small) — immediate OK, but still off main
+    static func saveFolderList(_ urls: [URL]) {
+        FP.ioQ.async {
+            let strings = urls.map { $0.absoluteString }
+            if let data = try? JSONEncoder().encode(strings) {
+                try? data.write(to: savedFoldersURL, options: .atomic)
+            }
         }
     }
-
-    private static func read<T: Decodable>(_ type: T.Type, from store: Store) -> T? {
-        guard let u = url(for: store), let data = try? Data(contentsOf: u) else { return nil }
-        return try? JSONDecoder().decode(T.self, from: data)
-    }
-
-    // MARK: Saved Folders
-    static func saveFolderList(_ urls: [URL]) {
-        // Persist as absoluteString to keep scheme + path intact.
-        let strings = urls.map { $0.standardizedFileURL.absoluteString }
-        _ = write(strings, to: .savedFolders)
-    }
-
     static func loadFolderList() -> [URL] {
-        guard let strings: [String] = read([String].self, from: .savedFolders) else { return [] }
-        // Filter out malformed entries
-        return strings.compactMap { URL(string: $0) }
+        guard let data = try? Data(contentsOf: savedFoldersURL),
+              let strings = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return strings.compactMap(URL.init(string:))
     }
 
-    // MARK: Library
+    // MARK: Library — debounced coalesced writer
     static func saveLibrary(_ songs: [Song]) {
-        _ = write(songs, to: .library)
+        FP.debounce(key: "lib", delay: 0.5) {
+            do {
+                let data = try JSONEncoder().encode(songs)
+                try data.write(to: libraryURL, options: .atomic)
+                // print("💾 Library saved (debounced).")
+            } catch {
+                print("❌ saveLibrary:", error)
+            }
+        }
     }
-
     static func loadLibrary() -> [Song] {
-        read([Song].self, from: .library) ?? []
+        guard let data = try? Data(contentsOf: libraryURL) else { return [] }
+        return (try? JSONDecoder().decode([Song].self, from: data)) ?? []
     }
 
-    // MARK: Playlists
+    // MARK: Playlists — debounced writer
     static func savePlaylists(_ playlists: [Playlist]) {
-        _ = write(playlists, to: .playlists)
+        FP.debounce(key: "pls", delay: 0.5) {
+            do {
+                let data = try JSONEncoder().encode(playlists)
+                try data.write(to: playlistsURL, options: .atomic)
+                // print("💾 Playlists saved (debounced).")
+            } catch {
+                print("❌ savePlaylists:", error)
+            }
+        }
     }
-
     static func loadPlaylists() -> [Playlist] {
-        read([Playlist].self, from: .playlists) ?? []
+        guard let data = try? Data(contentsOf: playlistsURL) else { return [] }
+        return (try? JSONDecoder().decode([Playlist].self, from: data)) ?? []
     }
 }

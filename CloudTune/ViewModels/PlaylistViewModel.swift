@@ -11,9 +11,11 @@ import SwiftUI
 class PlaylistViewModel: ObservableObject {
     @Published var playlists: [Playlist] = []
 
-
     private let playlistsFile = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("playlists.json")
+
+    private let ioQueue = DispatchQueue(label: "PlaylistIO", qos: .utility)
+    private var pendingSaveWork: DispatchWorkItem?
 
     init() {
         loadPlaylists()
@@ -22,12 +24,12 @@ class PlaylistViewModel: ObservableObject {
     func createPlaylist(name: String, songIDs: [String], coverArtFilename: String? = nil) {
         let newPlaylist = Playlist(name: name, coverArtFilename: coverArtFilename, songIDs: songIDs)
         playlists.append(newPlaylist)
-        savePlaylists()
+        scheduleSavePlaylists()
     }
 
     func addPlaylist(_ playlist: Playlist) {
         playlists.append(playlist)
-        savePlaylists()
+        scheduleSavePlaylists()
     }
 
     func updatePlaylist(_ updated: Playlist, withNewImage image: UIImage? = nil) {
@@ -35,30 +37,41 @@ class PlaylistViewModel: ObservableObject {
             var updatedPlaylist = updated
 
             if let image = image {
-                let newFilename = safeFilename(for: updated.name)
+                ioQueue.async {
+                    let newFilename = self.safeFilename(for: updated.name)
 
-                if let oldFilename = updated.coverArtFilename, oldFilename != newFilename {
-                    let oldPath = getCoversDirectory().appendingPathComponent(oldFilename)
-                    try? FileManager.default.removeItem(at: oldPath)
-                }
+                    if let oldFilename = updated.coverArtFilename, oldFilename != newFilename {
+                        let oldPath = Self.getCoversDirectory().appendingPathComponent(oldFilename)
+                        try? FileManager.default.removeItem(at: oldPath)
+                    }
 
-                if let saved = saveCoverImage(image: image, as: newFilename) {
-                    updatedPlaylist.coverArtFilename = saved
+                    if let saved = self.saveCoverImage(image: image, as: newFilename) {
+                        DispatchQueue.main.async {
+                            updatedPlaylist.coverArtFilename = saved
+                            self.playlists[index] = updatedPlaylist
+                            self.scheduleSavePlaylists()
+                        }
+                    } else {
+                        DispatchQueue.main.async {
+                            self.playlists[index] = updatedPlaylist
+                            self.scheduleSavePlaylists()
+                        }
+                    }
                 }
+            } else {
+                playlists[index] = updatedPlaylist
+                scheduleSavePlaylists()
             }
-
-            playlists[index] = updatedPlaylist
-            savePlaylists()
         }
     }
 
     func deletePlaylist(_ playlist: Playlist) {
         if let filename = playlist.coverArtFilename {
-            let path = getCoversDirectory().appendingPathComponent(filename)
+            let path = Self.getCoversDirectory().appendingPathComponent(filename)
             try? FileManager.default.removeItem(at: path)
         }
         playlists.removeAll { $0.id == playlist.id }
-        savePlaylists()
+        scheduleSavePlaylists()
     }
 
     func savePlaylists() {
@@ -70,19 +83,50 @@ class PlaylistViewModel: ObservableObject {
         }
     }
 
-    func loadPlaylists() {
-        do {
-            let data = try Data(contentsOf: playlistsFile)
-            playlists = try JSONDecoder().decode([Playlist].self, from: data)
-
-            for playlist in playlists {
-                if let filename = playlist.coverArtFilename {
-                    let fullPath = getCoversDirectory().appendingPathComponent(filename)
-                    print("🖼 Cover image exists for \(playlist.name):", FileManager.default.fileExists(atPath: fullPath.path))
-                }
+    func scheduleSavePlaylists(debounce: TimeInterval = 0.3) {
+        pendingSaveWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.ioQueue.async {
+                self.savePlaylists()
             }
-        } catch {
-            print("❌ Error loading playlists:", error)
+        }
+        pendingSaveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: work)
+    }
+
+    func loadPlaylists() {
+        ioQueue.async {
+            // If file doesn't exist yet → just publish empty playlists
+            guard FileManager.default.fileExists(atPath: self.playlistsFile.path) else {
+                DispatchQueue.main.async {
+                    self.playlists = []
+                    print("ℹ️ No playlists file yet — starting fresh.")
+                }
+                return
+            }
+
+            do {
+                let data = try Data(contentsOf: self.playlistsFile)
+                let loadedPlaylists = try JSONDecoder().decode([Playlist].self, from: data)
+
+                DispatchQueue.main.async {
+                    self.playlists = loadedPlaylists
+
+                    for playlist in loadedPlaylists {
+                        if let filename = playlist.coverArtFilename {
+                            let fullPath = Self.getCoversDirectory().appendingPathComponent(filename)
+                            print("🖼 Cover image exists for \(playlist.name):",
+                                  FileManager.default.fileExists(atPath: fullPath.path))
+                        }
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.playlists = []
+                }
+                print("❌ Failed to decode playlists.json:", error)
+            }
         }
     }
 
@@ -104,7 +148,7 @@ class PlaylistViewModel: ObservableObject {
     func saveCoverImage(image: UIImage, as filename: String) -> String? {
         guard let data = image.jpegData(compressionQuality: 0.9) else { return nil }
 
-        let path = getCoversDirectory().appendingPathComponent(filename)
+        let path = Self.getCoversDirectory().appendingPathComponent(filename)
         do {
             try data.write(to: path)
             return filename
@@ -114,7 +158,7 @@ class PlaylistViewModel: ObservableObject {
         }
     }
 
-    func getCoversDirectory() -> URL {
+    static func getCoversDirectory() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
     }
 }
