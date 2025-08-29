@@ -14,7 +14,7 @@ enum RepeatMode {
 }
 
 class PlaybackViewModel: NSObject, ObservableObject {
-    // 🔁 New engine that owns the player/graph.
+    // 🔁 Engine that owns the player/graph.
     private let audio = AudioEngine()
 
     @Published var currentSong: Song?
@@ -38,16 +38,51 @@ class PlaybackViewModel: NSObject, ObservableObject {
     private var timer: Timer?
     private var playbackStartTime: TimeInterval = 0
 
+    // Track the currently active play() to filter stale completions
+    private var playToken = UUID()
+
+    // Track user seeks so we can ignore immediate "completion" callbacks that some engines emit
+    private var lastSeekAt: TimeInterval = 0
+    private let seekIgnoreWindow: TimeInterval = 1.0 // seconds
+
+    // Keeps a security-scope open for the currently playing song's folder.
+    private var stopSecurityScope: (() -> Void)?
+
+    /// Returns true only for URLs that live *outside* our app sandbox and may need security scope.
+    private func requiresSecurityScope(for url: URL) -> Bool {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!.standardizedFileURL.path
+        let lib  = fm.urls(for: .libraryDirectory,  in: .userDomainMask).first!.standardizedFileURL.path
+        let tmp  = URL(fileURLWithPath: NSTemporaryDirectory()).standardizedFileURL.path
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+
+        // Only consider *your* app-group safe IF you actually have the entitlement.
+        var myGroupPath: String? = nil
+        if let groupID = Bundle.main.object(forInfoDictionaryKey: "AppGroupIdentifier") as? String,
+           let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID) {
+            myGroupPath = container.standardizedFileURL.path
+        }
+
+        // SAFE = inside Documents/Library/tmp or inside *your* entitled app group container
+        let inSandbox =
+            path.hasPrefix(docs) ||
+            path.hasPrefix(lib)  ||
+            path.hasPrefix(tmp)  ||
+            (myGroupPath != nil && path.hasPrefix(myGroupPath!))
+
+        print("🔎 requiresSecurityScope? \(!inSandbox) — path=\(path) docs=\(docs) lib=\(lib) tmp=\(tmp) myGroup=\(myGroupPath ?? "nil")")
+        return !inSandbox
+    }
+
     var songQueue: [Song] { isShuffle ? shuffledQueue : originalQueue }
 
     override init() {
         super.init()
-        
+
+        // Let the EQ UI control the engine's EQ node.
         EQManager.shared.attach(eq: audio.eq)
 
-        // AudioEngine already configures AVAudioSession internally.
-        // We just react to interruptions and route changes.
-
+        // AudioEngine configures AVAudioSession internally; we just react here.
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
@@ -75,7 +110,6 @@ class PlaybackViewModel: NSObject, ObservableObject {
             }
         }
 
-        // Optional debug
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
@@ -90,58 +124,98 @@ class PlaybackViewModel: NSObject, ObservableObject {
     // MARK: - Playback control
 
     func play(song: Song, in queue: [Song] = [], contextName: String? = nil) {
-        // If switching tracks, stop previous playback first.
+        // 0) If a new song (different URL) is chosen, stop current playback cleanly
+        // Close any previous folder security-scope when switching songs.
+        stopSecurityScope?()
+        stopSecurityScope = nil
+
         if currentSong?.url != song.url {
             audio.stop()
         }
 
-        // Order queue (by trackNumber when available)
-        let reorderedQueue: [Song]
-        if queue.allSatisfy({ $0.trackNumber > 0 }) {
-            reorderedQueue = queue.sorted { $0.trackNumber < $1.trackNumber }
-        } else {
-            reorderedQueue = queue
-        }
+        // 1) Use the EXACT order provided by caller (SongsView/Album/Playlist)
+        let incoming = queue.isEmpty ? [song] : queue
+        let reorderedQueue = incoming
 
+        // 2) Rebuild indices
         if reorderedQueue != originalQueue {
-            currentIndex = reorderedQueue.firstIndex(of: song) ?? 0
+            if let idx = reorderedQueue.firstIndex(of: song) {
+                currentIndex = idx
+            } else {
+                currentIndex = 0
+            }
             originalQueue = reorderedQueue
             shuffledQueue = reorderedQueue.shuffled()
         } else {
-            originalQueue = queue
-            shuffledQueue = queue.shuffled()
-            currentIndex = songQueue.firstIndex(of: song) ?? 0
+            if let idx = songQueue.firstIndex(of: song) {
+                currentIndex = idx
+            } else {
+                currentIndex = 0
+            }
         }
 
         currentSong = songQueue[currentIndex]
         currentContextName = contextName
 
-        print("▶️ Now playing index \(currentIndex) of \(songQueue.count): \(currentSong?.title ?? "nil") — \(currentSong?.artist ?? "nil")")
-
-        // Start playback via AudioEngine
-        let start = Date().timeIntervalSince1970
-        guard let url = currentSong?.url else { return }
-
-        audio.play(url: url) { [weak self] in
-            guard let self = self else { return }
-
-            // Guard against spurious super-early completions (rare race)
-            let elapsed = Date().timeIntervalSince1970 - start
-            if elapsed < 0.5 {
-                print("⚠️ Playback completion too soon (\(elapsed)s) — ignoring.")
-                return
-            }
-
-            print("🎧 PlaybackViewModel received completion")
-            self.handlePlaybackCompletion()
+        // 🔊 DEBUG BANNER
+        if let s = currentSong {
+            print("""
+            🎵 Now Playing
+               Title:  \(s.title)
+               Artist: \(s.artist)
+               Album:  \(s.album)
+               Track#: \(s.trackNumber ?? 0)  •  Duration: \(String(format: "%.1f sec", s.duration))
+            """)
         }
 
+        // 2.5) ✅ Ensure scope is alive for the folder containing this song.
+        if let s = currentSong {
+            if requiresSecurityScope(for: s.url) {
+                if SecurityScopeKeeper.shared.ensureScope(forParentOf: s.url) {
+                    print("🔐 Using existing security-scope for: \(s.url.deletingLastPathComponent().lastPathComponent)")
+                } else {
+                    print("⚠️ External location without matching active scope. Playback may fail.")
+                }
+            } else {
+                print("🏠 In-app file — security scope not required.")
+            }
+        }
+
+        // 3) Start playback using AudioEngine
         duration = currentSong?.duration ?? 0
         currentTime = 0
         isPlaying = true
         playbackStartTime = Date().timeIntervalSince1970
+        lastSeekAt = 0 // reset any old seek marker
         startTimer()
         if let s = currentSong { updateNowPlayingInfo(for: s) }
+
+        // 🔏 New token for this play()
+        playToken = UUID()
+        let tokenForThisPlay = playToken
+
+        audio.play(url: currentSong!.url, id: tokenForThisPlay) { [weak self] in
+            guard let self = self else { return }
+
+            // Ignore completions from previous plays
+            guard tokenForThisPlay == self.playToken else {
+                print("⤬ Completion from stale play token — ignored.")
+                return
+            }
+
+            // Ignore completions that fire immediately after a seek
+            let now = Date().timeIntervalSince1970
+            if now - self.lastSeekAt < self.seekIgnoreWindow {
+                print("⏸️ Completion ignored — within \(self.seekIgnoreWindow)s of a seek.")
+                return
+            }
+
+            guard self.isPlaying else {
+                print("🛑 Completion ignored — playback already stopped.")
+                return
+            }
+            self.handleSongCompletion()
+        }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.shouldShowPlayer = true
@@ -162,6 +236,13 @@ class PlaybackViewModel: NSObject, ObservableObject {
 
     func stop(clearSong: Bool = true) {
         audio.stop()
+        // Close any active security scope for the current song's folder.
+        stopSecurityScope?()
+        stopSecurityScope = nil
+
+        // Invalidate token so late completions from the engine are ignored
+        playToken = UUID()
+
         timer?.invalidate()
         timer = nil
         isPlaying = false
@@ -181,6 +262,9 @@ class PlaybackViewModel: NSObject, ObservableObject {
         guard currentSong != nil else { return }
 
         let clampedTime = max(0, min(time, duration > 0 ? duration - 0.5 : time))
+
+        // Mark the moment of user seek so we can ignore spurious completion callbacks
+        lastSeekAt = Date().timeIntervalSince1970
 
         audio.seek(to: clampedTime) { [weak self] in
             print("✅ seek(to:) completion handler fired")
@@ -237,7 +321,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
         isShuffle.toggle()
         if isShuffle {
             shuffledQueue = originalQueue
-            // Fisher-Yates shuffle (with current song kept at index 0)
+            // Fisher-Yates shuffle (keep current song at index 0)
             for i in stride(from: shuffledQueue.count - 1, through: 1, by: -1) {
                 let j = Int.random(in: 0...i)
                 shuffledQueue.swapAt(i, j)
@@ -271,6 +355,11 @@ class PlaybackViewModel: NSObject, ObservableObject {
 
     private func handlePlaybackCompletion() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            // Ignore ultra-early completions (engine priming etc.)
+            if Date().timeIntervalSince1970 - self.playbackStartTime < 0.5 {
+                print("⏸️ Ignoring ultra-early completion (<0.5s since start).")
+                return
+            }
             guard self.isPlaying else {
                 print("🛑 Completion ignored — playback already stopped.")
                 return

@@ -1,86 +1,64 @@
 import Foundation
 
+/// Lightweight persistence helpers for small JSON payloads stored in
+/// the app's Documents directory. Designed to be side‑effect free
+/// (no logging), atomic, and simple.
 struct FilePersistence {
-    static let folderListKey = "SavedFolders.json"
-    static let libraryKey = "Library.json"
-    static let playlistsKey = "playlists.json"
+    // MARK: Filenames
+    private enum Store: String { case savedFolders = "SavedFolders.json", library = "Library.json", playlists = "playlists.json" }
 
-    static var savedFoldersURL: URL? {
+    // MARK: URL helpers
+    private static func url(for store: Store) -> URL? {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
-            .first?.appendingPathComponent(folderListKey)
+            .first?.appendingPathComponent(store.rawValue)
     }
 
-    static var libraryURL: URL? {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
-            .first?.appendingPathComponent(libraryKey)
+    // MARK: Generic read/write
+    @discardableResult
+    private static func write<T: Encodable>(_ value: T, to store: Store) -> Bool {
+        guard let u = url(for: store) else { return false }
+        do {
+            let data = try JSONEncoder().encode(value)
+            try data.write(to: u, options: [.atomic])
+            return true
+        } catch {
+            return false
+        }
     }
 
-    static var playlistsURL: URL? {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
-            .first?.appendingPathComponent(playlistsKey)
+    private static func read<T: Decodable>(_ type: T.Type, from store: Store) -> T? {
+        guard let u = url(for: store), let data = try? Data(contentsOf: u) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
     }
 
+    // MARK: Saved Folders
     static func saveFolderList(_ urls: [URL]) {
-        guard let url = savedFoldersURL else { return }
-        let strings = urls.map { $0.absoluteString }
-        try? JSONEncoder().encode(strings).write(to: url)
+        // Persist as absoluteString to keep scheme + path intact.
+        let strings = urls.map { $0.standardizedFileURL.absoluteString }
+        _ = write(strings, to: .savedFolders)
     }
 
     static func loadFolderList() -> [URL] {
-        guard let url = savedFoldersURL,
-              let data = try? Data(contentsOf: url),
-              let strings = try? JSONDecoder().decode([String].self, from: data)
-        else {
-            return []
-        }
+        guard let strings: [String] = read([String].self, from: .savedFolders) else { return [] }
+        // Filter out malformed entries
         return strings.compactMap { URL(string: $0) }
     }
 
-    // Save entire song library
+    // MARK: Library
     static func saveLibrary(_ songs: [Song]) {
-        guard let url = libraryURL else { return }
-        do {
-            let data = try JSONEncoder().encode(songs)
-            try data.write(to: url)
-            print("💾 Library saved successfully.")
-        } catch {
-            print("❌ Failed to save library:", error)
-        }
+        _ = write(songs, to: .library)
     }
 
-    // Load entire song library
     static func loadLibrary() -> [Song] {
-        guard let url = libraryURL,
-              let data = try? Data(contentsOf: url),
-              let songs = try? JSONDecoder().decode([Song].self, from: data)
-        else {
-            print("⚠️ Failed to load saved library.")
-            return []
-        }
-        return songs
+        read([Song].self, from: .library) ?? []
     }
 
-    // Save all playlists
+    // MARK: Playlists
     static func savePlaylists(_ playlists: [Playlist]) {
-        guard let url = playlistsURL else { return }
-        do {
-            let data = try JSONEncoder().encode(playlists)
-            try data.write(to: url)
-            print("💾 Playlists saved successfully.")
-        } catch {
-            print("❌ Failed to save playlists:", error)
-        }
+        _ = write(playlists, to: .playlists)
     }
 
-    // Load all playlists
     static func loadPlaylists() -> [Playlist] {
-        guard let url = playlistsURL,
-              let data = try? Data(contentsOf: url),
-              let playlists = try? JSONDecoder().decode([Playlist].self, from: data)
-        else {
-            print("⚠️ Failed to load saved playlists.")
-            return []
-        }
-        return playlists
+        read([Playlist].self, from: .playlists) ?? []
     }
 }

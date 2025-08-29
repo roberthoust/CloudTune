@@ -10,6 +10,7 @@ import AudioToolbox   // for AudioComponentDescription & AU instantiate
 import Accelerate     // vDSP peak scan for the guard tap
 
 final class AudioEngine {
+    static let shared = AudioEngine()
 
     // MARK: Core nodes
     let engine = AVAudioEngine()
@@ -28,6 +29,10 @@ final class AudioEngine {
     private var currentFile: AVAudioFile?
     private var playbackCompletion: (() -> Void)?
     private var activePlaybackID: UUID?
+
+    // 🔐 Keep a security-scope alive for the currently opened file’s folder.
+    // We synthesize a stopper that calls BookmarkStore.endAccess(forFolderContaining:).
+    private var currentScopeStopper: (() -> Void)?
 
     // Graph readiness (because limiter instantiation is async)
     private var isGraphReady = false
@@ -53,11 +58,24 @@ final class AudioEngine {
     func play(url: URL, id: UUID = UUID(), completion: (() -> Void)? = nil) {
         whenReady { [weak self] in
             guard let self else { return }
+
+            // Close scope for the previous file (if any) before switching.
+            self.currentScopeStopper?()
+            self.currentScopeStopper = nil
+
             self.activePlaybackID = id
             self.playbackCompletion = completion
 
             self.player.stop()
             self.player.reset()
+
+            // 🔑 Open security scope for a bookmarked ancestor folder (if present).
+            if BookmarkStore.shared.beginAccessIfBookmarked(parentOf: url) {
+                // Keep a stopper we can call on stop/switch
+                self.currentScopeStopper = { BookmarkStore.shared.endAccess(forFolderContaining: url) }
+            } else {
+                self.currentScopeStopper = nil
+            }
 
             do {
                 let file = try AVAudioFile(forReading: url)
@@ -67,7 +85,7 @@ final class AudioEngine {
                 self.player.scheduleFile(file, at: nil) { [weak self] in
                     guard let self else { return }
                     guard self.activePlaybackID == id else { return }
-                    // ignore spurious early completions
+                    // Ignore spurious "immediate" completions
                     if CACurrentMediaTime() - startStamp < 0.5 { return }
                     DispatchQueue.main.async { self.playbackCompletion?() }
                 }
@@ -90,7 +108,7 @@ final class AudioEngine {
             let clamped = max(0, min(seconds, duration))
 
             let startFrame = AVAudioFramePosition(clamped * sr)
-            let framesLeft = AVAudioFrameCount(totalFrames - startFrame)
+            let framesLeft = AVAudioFrameCount(max(0, totalFrames - startFrame))
 
             self.player.stop()
             self.player.reset()
@@ -117,6 +135,11 @@ final class AudioEngine {
         playbackCompletion = nil
         activePlaybackID = nil
         currentFile = nil
+
+        // 🔐 Release scope now that the file is no longer used
+        currentScopeStopper?()
+        currentScopeStopper = nil
+
         // keep engine running to avoid first-note glitch on next start
     }
 

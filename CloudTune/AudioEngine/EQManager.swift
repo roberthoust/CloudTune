@@ -9,7 +9,7 @@ import AVFoundation
 final class EQManager {
     static let shared = EQManager()
 
-    // MARK: Policy
+    // MARK: - Policy
     /// Production-safe EQ range.
     private let gainMinDB: Float = -6.0
     private let gainMaxDB: Float =  6.0
@@ -17,21 +17,21 @@ final class EQManager {
     /// If the UI fires many changes quickly, we coalesce to this delay.
     private let coalesceDelay: TimeInterval = 0.03 // ~30 ms
 
-    // MARK: Wiring
+    // MARK: - Wiring
     private weak var eqNode: AVAudioUnitEQ?
     private(set) var bandFrequencies: [Float] = [60, 250, 1000, 4000, 8000]
 
-    // MARK: Coalescing machinery
+    // MARK: - Coalescing machinery
     private let updateQueue = DispatchQueue(label: "eq.update.queue", qos: .userInitiated)
     private var pendingWork: DispatchWorkItem?
 
-    // MARK: Persistence keys
+    // MARK: - Persistence keys
     private let presetsKey        = "EQPresets"
     private let customNamesKey    = "CustomPresetNames"
     private let lastUsedGainsKey  = "LastUsedEQ"
     private let lastUsedNameKey   = "LastUsedEQName"
 
-    // MARK: Built-ins
+    // MARK: - Built-ins
     private let builtInPresets: [String: [Float]] = [
         "Flat":         [ 0,  0,  0,  0,  0],
         "Bass Boost":   [ 6,  3,  0, -2, -4],
@@ -42,7 +42,7 @@ final class EQManager {
 
     private init() {}
 
-    // MARK: Attach / boot
+    // MARK: - Attach / boot
     /// Call this once after AudioEngine is created (and the node is attached to the engine).
     func attach(eq: AVAudioUnitEQ, frequencies: [Float]? = nil) {
         self.eqNode = eq
@@ -60,8 +60,7 @@ final class EQManager {
         }
 
         // Apply last-used gains on app start
-        let gains = loadLastUsed()
-        applyToEQ(gains)
+        applyToEQ(loadLastUsed())
     }
 
     // MARK: - Band control
@@ -71,8 +70,7 @@ final class EQManager {
     func setBands(_ gains: [Float], coalesce: Bool = true) {
         let clamped = clampGains(gains)
 
-        // Persist immediately so a crash/quit doesn’t lose the state
-        // (presetName is handled separately by saveLastUsed(gains:presetName:))
+        // Persist immediately so a crash/quit doesn’t lose the state.
         UserDefaults.standard.set(clamped, forKey: lastUsedGainsKey)
 
         guard eqNode != nil else { return }
@@ -100,6 +98,14 @@ final class EQManager {
     /// Last used preset name (for banner/startup).
     var lastUsedPresetName: String {
         UserDefaults.standard.string(forKey: lastUsedNameKey) ?? "Flat"
+    }
+
+    /// Name of the preset that matches the *current* EQ gains.
+    /// If gains are edited relative to the last selection, returns "<lastUsedPresetName> (edited)".
+    var activePresetName: String {
+        let gains = getCurrentGains()
+        if let exact = matchPresetName(gains) { return exact }
+        return "\(lastUsedPresetName) (edited)"
     }
 
     func loadPreset(named name: String) -> [Float] {
@@ -134,7 +140,8 @@ final class EQManager {
     }
 
     /// Persist both gains and (optionally) the preset name.
-    func saveLastUsed(gains: [Float], presetName: String?) {
+    /// Unlabeled first parameter so older call sites compile.
+    func saveLastUsed(_ gains: [Float], presetName: String?) {
         let safe = clampGains(gains)
         guard safe.count == bandFrequencies.count else { return }
         UserDefaults.standard.set(safe, forKey: lastUsedGainsKey)
@@ -143,6 +150,11 @@ final class EQManager {
         } else {
             UserDefaults.standard.removeObject(forKey: lastUsedNameKey)
         }
+    }
+
+    /// Labeled convenience so newer call sites that use `gains:` also compile.
+    func saveLastUsed(gains: [Float], presetName: String?) {
+        saveLastUsed(gains, presetName: presetName)
     }
 
     /// Gains to apply on app start.
@@ -185,33 +197,13 @@ final class EQManager {
             names.append(name)
             UserDefaults.standard.set(names, forKey: customNamesKey)
         }
-        
-    }
-    // MARK: - Active preset name (for UI banners, etc.)
-
-    /// Name of the preset that matches the *current* EQ gains.
-    /// If gains are edited relative to the last selection, returns "<lastUsedPresetName> (edited)".
-    var activePresetName: String {
-        let gains = getCurrentGains()
-        if let exact = matchPresetName(gains) {
-            return exact
-        }
-        // No exact match: keep the last-used name but mark as edited
-        let last = lastUsedPresetName
-        return "\(last) (edited)"
     }
 
     // Finds an exact preset name that matches the provided gains (built-in or custom).
     private func matchPresetName(_ gains: [Float]) -> String? {
-        // Built-ins
-        for (name, vals) in builtInPresets {
-            if eqMatches(lhs: gains, rhs: vals) { return name }
-        }
-        // Customs
+        for (name, vals) in builtInPresets where eqMatches(lhs: gains, rhs: vals) { return name }
         if let custom = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] {
-            for (name, vals) in custom where eqMatches(lhs: gains, rhs: vals) {
-                return name
-            }
+            for (name, vals) in custom where eqMatches(lhs: gains, rhs: vals) { return name }
         }
         return nil
     }
@@ -219,9 +211,29 @@ final class EQManager {
     // Float-array equality with tiny tolerance.
     private func eqMatches(lhs: [Float], rhs: [Float]) -> Bool {
         guard lhs.count == rhs.count else { return false }
-        for i in 0..<lhs.count {
-            if abs(lhs[i] - rhs[i]) > 0.001 { return false }
-        }
+        for i in 0..<lhs.count where abs(lhs[i] - rhs[i]) > 0.001 { return false }
         return true
+    }
+}
+
+// MARK: - Back-compat playback proxies (forward to AudioEngine)
+
+extension EQManager {
+    private var audio: AudioEngine { AudioEngine.shared }
+
+    func start() throws {
+        if !audio.engine.isRunning { try? audio.engine.start() }
+    }
+
+    func play(song: Song, id playbackID: UUID, completion: @escaping (UUID) -> Void) throws {
+        audio.play(url: song.url, id: playbackID) { completion(playbackID) }
+    }
+
+    func pause()  { audio.pause() }
+    func resume() { audio.resume() }
+    func stop()   { audio.stop() }
+
+    func seek(to time: TimeInterval, completion: (() -> Void)? = nil) {
+        audio.seek(to: time, completion: completion)
     }
 }

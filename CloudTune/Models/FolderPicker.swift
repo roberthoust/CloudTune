@@ -1,13 +1,9 @@
-//
-//  FolderPicker.swift
-//  CloudTune
-//
-
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct FolderPicker: UIViewControllerRepresentable {
-    var onFolderPicked: (URL) -> Void
+    /// Caller only gets the picked folder URL. Security scope is kept internally for the app session.
+    var onFolderPicked: (_ folderURL: URL) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onFolderPicked: onFolderPicked)
@@ -18,11 +14,9 @@ struct FolderPicker: UIViewControllerRepresentable {
         picker.delegate = context.coordinator
         picker.presentationController?.delegate = context.coordinator
 
-        // Prefer Music directory if available
-        if let musicDir = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first {
-            picker.directoryURL = musicDir
-        } else {
-            picker.directoryURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        // Use Documents; .musicDirectory may not exist on iOS
+        if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            picker.directoryURL = docs
         }
 
         picker.allowsMultipleSelection = false
@@ -30,41 +24,27 @@ struct FolderPicker: UIViewControllerRepresentable {
         return picker
     }
 
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+    func updateUIViewController(_: UIDocumentPickerViewController, context: Context) {}
 
     class Coordinator: NSObject, UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate {
-        let onFolderPicked: (URL) -> Void
+        let onFolderPicked: (_ folderURL: URL) -> Void
 
-        init(onFolderPicked: @escaping (URL) -> Void) {
+        init(onFolderPicked: @escaping (_ url: URL) -> Void) {
             self.onFolderPicked = onFolderPicked
         }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             guard let folderURL = urls.first else { return }
 
-            let accessing = folderURL.startAccessingSecurityScopedResource()
-            defer {
-                if accessing {
-                    folderURL.stopAccessingSecurityScopedResource()
-                }
-            }
+            // Open security scope now (kept for this session) and persist a scoped bookmark for future launches.
+            let didStart = folderURL.startAccessingSecurityScopedResource()
+            let stopAccess = { if didStart { folderURL.stopAccessingSecurityScopedResource() } }
+            SecurityScopeKeeper.shared.keepScope(for: folderURL, stopper: stopAccess)
 
-            do {
-                let bookmark = try folderURL.bookmarkData(
-                    options: [], // ✅ No .withSecurityScope on iOS
-                    includingResourceValuesForKeys: nil,
-                    relativeTo: nil
-                )
+            // Persist a scoped bookmark so we can re-open access on next launch.
+            BookmarkStore.shared.saveBookmark(forFolder: folderURL)
 
-                var existing = UserDefaults.standard.array(forKey: "bookmarkedFolders") as? [Data] ?? []
-                existing.append(bookmark)
-                UserDefaults.standard.set(existing, forKey: "bookmarkedFolders")
-
-                print("✅ Saved bookmark for folder: \(folderURL.lastPathComponent)")
-            } catch {
-                print("❌ Failed to save folder bookmark: \(error)")
-            }
-
+            // Hand URL to caller; no stopAccess exposed anymore.
             onFolderPicked(folderURL)
         }
 

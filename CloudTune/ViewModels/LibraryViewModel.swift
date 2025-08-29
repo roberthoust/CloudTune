@@ -21,35 +21,51 @@ final class LibraryViewModel: ObservableObject {
         Task { await loadLibraryOnLaunch() }
     }
 
+    // MARK: - Container helpers
+
+    private func currentContainerID() -> String {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!.path
+        return docs.components(separatedBy: "/Application/").last?.components(separatedBy: "/").first ?? "unknown"
+    }
+
+    private func extractContainerID(from path: String) -> String? {
+        return path.components(separatedBy: "/Application/").last?.components(separatedBy: "/").first
+    }
+
     // MARK: - Launch
 
     func loadLibraryOnLaunch() async {
         // 1) Restore bookmarks → de-dupe → publish
-        let restoredFolders = BookmarkManager.restoreBookmarkedFolders()
+        //    (Use BookmarkStore.shared.restoredFolderURLs())
+        let restoredFolders = BookmarkStore.shared.restoredFolderURLs()
         let uniqueFolders = Dictionary(grouping: restoredFolders, by: { $0.standardizedFileURL.path })
             .compactMapValues { $0.first }
             .values
         await MainActor.run { savedFolders = Array(uniqueFolders) }
-        FilePersistence.saveFolderList(savedFolders)
 
-        // 2) Try cached library first (fast start)
+        // 2) Cache gating by container UUID
+        let thisContainer = currentContainerID()
+        let lastContainer = UserDefaults.standard.string(forKey: "lastContainerID")
         let cachedSongs = FilePersistence.loadLibrary()
-        if !cachedSongs.isEmpty {
+        let shouldUseCache = (lastContainer == thisContainer) && !cachedSongs.isEmpty
+
+        if shouldUseCache {
+            // 3) Fast start with cache, then prune anything missing/foreign
             await MainActor.run { self.songs = cachedSongs }
-            // 3) Immediately prune any files that were deleted outside the app
-            await pruneMissingFiles(updateDisk: false) // don’t rewrite cache twice on launch
-            return
+            _ = await pruneMissingFiles(updateDisk: false) // don't rewrite cache twice
+        } else {
+            // 4) Cold load + enrich from the *restored folders* (current install)
+            var loaded: [Song] = []
+            for folder in savedFolders {
+                let enriched = await loadAndEnrichSongs(from: folder)
+                loaded.append(contentsOf: enriched)
+            }
+            await MainActor.run { self.songs = loaded }
+            FilePersistence.saveLibrary(loaded)
         }
 
-        // 4) Cold load + enrich
-        var loaded: [Song] = []
-        for folder in savedFolders {
-            let enriched = await loadAndEnrichSongs(from: folder)
-            loaded.append(contentsOf: enriched)
-        }
-
-        await MainActor.run { self.songs = loaded }
-        FilePersistence.saveLibrary(loaded)
+        // 5) Remember the container we used to populate cache
+        UserDefaults.standard.set(thisContainer, forKey: "lastContainerID")
     }
 
     // MARK: - Import / Scan
@@ -58,7 +74,7 @@ final class LibraryViewModel: ObservableObject {
         let enriched = await loadAndEnrichSongs(from: folderURL)
         guard !enriched.isEmpty else { return }
         await appendSongs(enriched, from: folderURL)
-        BookmarkManager.saveFolderBookmark(url: folderURL)
+        BookmarkStore.shared.saveBookmark(forFolder: folderURL)
     }
 
     @MainActor
@@ -66,7 +82,7 @@ final class LibraryViewModel: ObservableObject {
         let enriched = await loadAndEnrichSongs(from: folderURL)
         guard !enriched.isEmpty else { return }
         await appendSongs(enriched, from: folderURL)
-        BookmarkManager.saveFolderBookmark(url: folderURL)
+        BookmarkStore.shared.saveBookmark(forFolder: folderURL)
     }
 
     private func loadAndEnrichSongs(from folderURL: URL) async -> [Song] {
@@ -143,7 +159,6 @@ final class LibraryViewModel: ObservableObject {
         if !existingPaths.contains(normalizedPath) {
             await MainActor.run {
                 savedFolders.append(folderURL.standardizedFileURL)
-                FilePersistence.saveFolderList(savedFolders)
             }
         }
 
@@ -174,19 +189,24 @@ final class LibraryViewModel: ObservableObject {
         for s in removed { songMetadataCache.removeValue(forKey: s.id) }
 
         // Clean persistence
-        BookmarkManager.removeBookmark(for: folder)
+        BookmarkStore.shared.removeBookmark(forFolderPath: folder.path)
         albumMappings.removeValue(forKey: folder.path)
         AlbumMappingStore.save(albumMappings)
-        FilePersistence.saveFolderList(savedFolders)
         FilePersistence.saveLibrary(songs)
     }
 
-    /// One-tap “Force Remove Missing Files”: removes any song whose file cannot be found/resolved.
-    /// - Parameter updateDisk: set true to rewrite the on-disk cache immediately.
+    /// One-tap “Force Remove Missing Files”: removes any song whose file cannot be found/resolved
+    /// OR whose URL belongs to a different app container.
     @discardableResult
     func pruneMissingFiles(updateDisk: Bool = true) async -> Int {
         let fm = FileManager.default
         let snapshot = songs
+        let myContainer = currentContainerID()
+
+        func isForeignContainer(_ path: String) -> Bool {
+            guard let id = extractContainerID(from: path) else { return false }
+            return !id.isEmpty && id != myContainer
+        }
 
         return await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
@@ -196,11 +216,12 @@ final class LibraryViewModel: ObservableObject {
 
                 for s in snapshot {
                     let url = s.url.standardizedFileURL
-                    if fm.fileExists(atPath: url.path) {
-                        kept.append(s)
-                    } else {
+                    let path = url.path
+                    if isForeignContainer(path) || !fm.fileExists(atPath: path) {
                         removedIDs.insert(s.id)
                         removedURLs.append(url)
+                    } else {
+                        kept.append(s)
                     }
                 }
 

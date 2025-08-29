@@ -59,7 +59,6 @@ struct SongRowButton: View {
             if isCurrentSong {
                 playbackVM.showPlayer = true
             } else {
-                print("🎵 Playing: \(song.title) from album: \(albumName)")
                 playbackVM.play(song: song, in: songs, contextName: albumName)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                     playbackVM.showPlayer = true

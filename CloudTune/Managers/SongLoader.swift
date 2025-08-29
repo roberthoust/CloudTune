@@ -4,22 +4,24 @@ import UIKit
 
 class SongLoader {
     static let allowedExtensions = ["mp3", "m4a", "aac", "wav", "aiff", "aif", "caf", "flac"]
-    static let imageExtensions = ["jpg", "jpeg", "png", "webp"]
+    static let imageExtensions   = ["jpg", "jpeg", "png", "webp"]
 
-    /// Load all valid audio files from a given folder URL, optionally using a persisted security scope.
+    /// Load all valid audio files from a given folder URL.
+    /// NOTE: Security scope is managed by the caller (FolderPicker + SecurityScopeKeeper).
     static func loadSongs(from folderURL: URL) async -> [Song] {
         var songs: [Song] = []
-
         let fileManager = FileManager.default
-        let didStartAccess = folderURL.startAccessingSecurityScopedResource()
-        defer {
-            if didStartAccess {
-                folderURL.stopAccessingSecurityScopedResource()
-            }
-        }
+
+        // ❗️Do NOT open/close security scope here — it’s kept alive by the caller.
+        // let didStartAccess = folderURL.startAccessingSecurityScopedResource()
+        // defer { if didStartAccess { folderURL.stopAccessingSecurityScopedResource() } }
 
         // Get all files (non-hidden)
-        guard let files = try? fileManager.contentsOfDirectory(at: folderURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: folderURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
             print("⚠️ Could not read folder: \(folderURL)")
             return []
         }
@@ -56,24 +58,16 @@ class SongLoader {
                 }
 
                 // Ensure album/artist/title fallback safety
-                if enriched.album.isEmpty {
-                    enriched.album = rawSong.album
-                }
-                if enriched.artist.isEmpty {
-                    enriched.artist = rawSong.artist
-                }
-                if enriched.title.isEmpty {
-                    enriched.title = rawSong.title
-                }
+                if enriched.album.isEmpty  { enriched.album  = rawSong.album }
+                if enriched.artist.isEmpty { enriched.artist = rawSong.artist }
+                if enriched.title.isEmpty  { enriched.title  = rawSong.title  }
 
                 songs.append(enriched)
             } catch {
                 // Fallback to raw song if enrichment failed
                 print("⚠️ Enrichment failed for \(rawSong.title). Using fallback metadata.")
                 var fallback = rawSong
-                if fallback.artwork == nil {
-                    fallback.artwork = fallbackArtwork
-                }
+                if fallback.artwork == nil { fallback.artwork = fallbackArtwork }
                 print("📦 Fallback Metadata — Title: \(fallback.title), Artist: \(fallback.artist), Album: \(fallback.album), Track: \(fallback.trackNumber ?? 0)")
                 songs.append(fallback)
             }
@@ -82,7 +76,9 @@ class SongLoader {
         return songs
     }
 
-    /// Pick the best image to use as fallback album cover
+    // MARK: - Helpers
+
+    /// Pick the best image to use as fallback album cover.
     private static func bestAlbumArtwork(in files: [URL]) -> Data? {
         let images = files.filter { imageExtensions.contains($0.pathExtension.lowercased()) }
 
@@ -101,10 +97,13 @@ class SongLoader {
             return (url, score)
         }
 
-        return scored.sorted { $0.1 > $1.1 }.first.flatMap { try? Data(contentsOf: $0.0) }
+        return scored
+            .sorted { $0.1 > $1.1 }
+            .first
+            .flatMap { try? Data(contentsOf: $0.0) }
     }
 
-    /// Extract AVMetadata and fallback fields from a file
+    /// Extract AVMetadata and fallback fields from a file.
     private static func extractMetadata(from fileURL: URL) -> Song {
         let asset = AVAsset(url: fileURL)
         let filename = fileURL.deletingPathExtension().lastPathComponent
@@ -147,7 +146,7 @@ class SongLoader {
             }
         }
 
-        // MARK: Strict fallback: only accept track numbers from known keys/IDs
+        // Strict fallback: only accept track numbers from known keys/IDs
         if trackNumber == nil {
             let allowedIDs: Set<String> = [
                 AVMetadataIdentifier.id3MetadataTrackNumber.rawValue,   // "TRCK"
@@ -155,9 +154,7 @@ class SongLoader {
             ]
 
             func parseTrack(_ item: AVMetadataItem) -> Int? {
-                // Prefer numberValue if sane
                 if let n = item.numberValue?.intValue, (1...99).contains(n) { return n }
-                // Parse string forms like "05/12", "05", "5 of 12"
                 if let s = item.stringValue {
                     let cleaned = s.replacingOccurrences(of: "of", with: "/")
                     let first = cleaned
@@ -174,7 +171,6 @@ class SongLoader {
                     let isCommonTrack = (item.commonKey?.rawValue == "trackNumber")
                     let isAllowedID = item.identifier.map { allowedIDs.contains($0.rawValue) } ?? false
                     guard isCommonTrack || isAllowedID else { continue }
-
                     if let n = parseTrack(item) {
                         trackNumber = n
                         break outer
@@ -183,10 +179,8 @@ class SongLoader {
             }
         }
 
-        // FINAL sanity: discard absurd values (e.g., year=2015 accidentally parsed upstream)
-        if let tn = trackNumber, !(1...99).contains(tn) {
-            trackNumber = nil
-        }
+        // Final sanity
+        if let tn = trackNumber, !(1...99).contains(tn) { trackNumber = nil }
 
         // Filename rescue (e.g., "01 - Title", "1. Title", "01_Title")
         if trackNumber == nil {
@@ -201,7 +195,7 @@ class SongLoader {
             let components = filename.components(separatedBy: " - ")
             if components.count == 2 {
                 artist = components[0].trimmingCharacters(in: .whitespaces)
-                title = components[1].trimmingCharacters(in: .whitespaces)
+                title  = components[1].trimmingCharacters(in: .whitespaces)
             }
         }
 

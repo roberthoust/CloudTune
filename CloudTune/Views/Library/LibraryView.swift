@@ -62,15 +62,13 @@ struct LibraryView: View {
                 .sheet(isPresented: $showFolderPicker) {
                     FolderPicker { folderURL in
                         showFolderPicker = false
-                        importState.isImporting = true
                         Task {
-                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            await MainActor.run { importState.isImporting = true }
                             await libraryVM.importAndEnrich(folderURL)
-                            await MainActor.run {
-                                importState.isImporting = false
-                            }
+                            await MainActor.run { importState.isImporting = false }
                         }
                     }
+                    .interactiveDismissDisabled(importState.isImporting)
                 }
             }
             if importState.isImporting {

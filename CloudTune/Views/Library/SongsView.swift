@@ -68,7 +68,6 @@ struct SongsView: View {
                                         // Already playing this song, just present player
                                         isPresentingPlayer = true
                                     } else {
-                                        print("🎵 Playing: \(song.title) by \(song.artist)")
                                         if let index = sortedSongs.firstIndex(of: song) {
                                             playbackVM.currentIndex = index
                                         }
