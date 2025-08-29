@@ -70,7 +70,10 @@ class PlaybackViewModel: NSObject, ObservableObject {
             path.hasPrefix(tmp)  ||
             (myGroupPath != nil && path.hasPrefix(myGroupPath!))
 
-        print("🔎 requiresSecurityScope? \(!inSandbox) — path=\(path) docs=\(docs) lib=\(lib) tmp=\(tmp) myGroup=\(myGroupPath ?? "nil")")
+//        if !inSandbox {
+//            print("🔎 requiresSecurityScope? true — path=\(path)")
+//        }
+        
         return !inSandbox
     }
 
@@ -171,10 +174,17 @@ class PlaybackViewModel: NSObject, ObservableObject {
         // 2.5) ✅ Ensure scope is alive for the folder containing this song.
         if let s = currentSong {
             if requiresSecurityScope(for: s.url) {
+                let parentName = s.url.deletingLastPathComponent().lastPathComponent
+
+                // Prefer an already-kept scope (FolderPicker / SecurityScopeKeeper).
                 if SecurityScopeKeeper.shared.ensureScope(forParentOf: s.url) {
-                    print("🔐 Using existing security-scope for: \(s.url.deletingLastPathComponent().lastPathComponent)")
+                    // Existing scope found; DO NOT start another one.
+                    print("🔐 Using existing security-scope for: \(parentName)")
+                } else if BookmarkStore.shared.beginAccessIfBookmarked(parentOf: s.url) {
+                    // We started a new scope from a bookmark; fine for this session.
+                    print("🔐 Started scope for: \(parentName)")
                 } else {
-                    print("⚠️ External location without matching active scope. Playback may fail.")
+                    print("⚠️ External location without bookmark/scope. Playback may fail.")
                 }
             } else {
                 print("🏠 In-app file — security scope not required.")
@@ -261,19 +271,41 @@ class PlaybackViewModel: NSObject, ObservableObject {
     func seek(to time: Double) {
         guard currentSong != nil else { return }
 
-        let clampedTime = max(0, min(time, duration > 0 ? duration - 0.5 : time))
+        // If the user seeks essentially to the end, just advance now
+        let tailGuard: TimeInterval = 1.2 // seconds reserved so the engine has frames to render
+        if duration > 0, time >= duration - tailGuard {
+            print("⏭️ Seeked into tail (<\(tailGuard)s left) — auto-advancing")
+            handleSongCompletion()
+            return
+        }
 
-        // Mark the moment of user seek so we can ignore spurious completion callbacks
+        // Clamp slightly before the absolute end so scheduleSegment has frames to render
+        let clampedTime = max(0, min(time, duration > 0 ? duration - tailGuard : time))
+
+        // Remember if we were playing to keep UI state consistent
+        let wasPlaying = isPlaying
+
+        // Mark the moment of user seek so (temporarily) we ignore ultra-early completions
         lastSeekAt = Date().timeIntervalSince1970
 
         audio.seek(to: clampedTime) { [weak self] in
-            print("✅ seek(to:) completion handler fired")
-            self?.updateNowPlayingElapsedTime()
+            guard let self = self else { return }
+            // Seek is settled; re-enable normal end-of-track completion so autoplay works
+            self.lastSeekAt = 0
+            print("✅ seek(to:) completion handler fired — autoplay re-enabled")
+            self.updateNowPlayingElapsedTime()
+            // Ensure Now Playing center stays in sync after the seek finishes
+            self.updateNowPlayingPlaybackState()
         }
 
+        // Rebase our local clock/UI
         playbackStartTime = Date().timeIntervalSince1970 - clampedTime
         currentTime = clampedTime
+        if !wasPlaying {
+            isPlaying = true
+        }
         startTimer()
+        updateNowPlayingPlaybackState()
     }
 
     func skipForward() {

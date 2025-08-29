@@ -12,6 +12,31 @@ import Accelerate     // vDSP peak scan for the guard tap
 final class AudioEngine {
     static let shared = AudioEngine()
 
+    // MARK: - Sandbox helper
+    /// Returns true only for URLs that live *outside* our app sandbox and may need security scope.
+    private func requiresSecurityScope(for url: URL) -> Bool {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!.standardizedFileURL.path
+        let lib  = fm.urls(for: .libraryDirectory,  in: .userDomainMask).first!.standardizedFileURL.path
+        let tmp  = URL(fileURLWithPath: NSTemporaryDirectory()).standardizedFileURL.path
+        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+
+        var myGroupPath: String? = nil
+        if let groupID = Bundle.main.object(forInfoDictionaryKey: "AppGroupIdentifier") as? String,
+           let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID) {
+            myGroupPath = container.standardizedFileURL.path
+        }
+
+        let inSandbox =
+            path.hasPrefix(docs) ||
+            path.hasPrefix(lib)  ||
+            path.hasPrefix(tmp)  ||
+            (myGroupPath != nil && path.hasPrefix(myGroupPath!))
+
+        print("🔎 requiresSecurityScope? \(!inSandbox) — path=\(path)")
+        return !inSandbox
+    }
+
     // MARK: Core nodes
     let engine = AVAudioEngine()
     let player = AVAudioPlayerNode()
@@ -68,17 +93,29 @@ final class AudioEngine {
 
             self.player.stop()
             self.player.reset()
+            print("▶️ AudioEngine.play(url: \(url.lastPathComponent))")
 
-            // 🔑 Open security scope for a bookmarked ancestor folder (if present).
-            if BookmarkStore.shared.beginAccessIfBookmarked(parentOf: url) {
-                // Keep a stopper we can call on stop/switch
-                self.currentScopeStopper = { BookmarkStore.shared.endAccess(forFolderContaining: url) }
+            // 🔑 Open security scope for a bookmarked ancestor folder (only if needed).
+            if self.requiresSecurityScope(for: url) {
+                if BookmarkStore.shared.beginAccessIfBookmarked(parentOf: url) {
+                    // Scope is now ensured for the parent folder (may have been newly started or already active).
+                    // We keep only the release log to avoid duplicate/noisy "scope acquired" messages.
+                    self.currentScopeStopper = {
+                        BookmarkStore.shared.endAccess(forFolderContaining: url)
+                        print("🛑 Scope released for: \(url.deletingLastPathComponent().lastPathComponent)")
+                    }
+                } else {
+                    print("⚠️ No matching active bookmark for: \(url.path)")
+                    self.currentScopeStopper = nil
+                }
             } else {
+                print("🏠 In-app file — security scope not required.")
                 self.currentScopeStopper = nil
             }
 
             do {
                 let file = try AVAudioFile(forReading: url)
+                print("📖 Opened AVAudioFile. sampleRate=\(file.processingFormat.sampleRate) ch=\(file.processingFormat.channelCount) frames=\(file.length)")
                 self.currentFile = file
 
                 let startStamp = CACurrentMediaTime()
@@ -91,9 +128,10 @@ final class AudioEngine {
                 }
 
                 if !self.engine.isRunning { try? self.engine.start() }
+                print("🔊 Scheduling file & starting engine (running=\(self.engine.isRunning))")
                 self.player.play()
             } catch {
-                print("❌ AudioEngine.play: \(error.localizedDescription)")
+                print("❌ AudioEngine.play failed for \(url.lastPathComponent): \(error.localizedDescription)")
             }
         }
     }
@@ -105,24 +143,33 @@ final class AudioEngine {
             let sr = file.processingFormat.sampleRate
             let totalFrames = file.length
             let duration = Double(totalFrames) / sr
+            print("⏩ seek(to: \(String(format: "%.3f", seconds)))")
+            print("    file frames=\(totalFrames) sr=\(sr) duration=\(String(format: "%.3f", duration))")
             let clamped = max(0, min(seconds, duration))
 
             let startFrame = AVAudioFramePosition(clamped * sr)
             let framesLeft = AVAudioFrameCount(max(0, totalFrames - startFrame))
+            print("    startFrame=\(startFrame) framesLeft=\(framesLeft)")
 
             self.player.stop()
             self.player.reset()
             file.framePosition = startFrame
 
-            let seekID = UUID()
-            self.activePlaybackID = seekID
-
-            self.player.scheduleSegment(file, startingFrame: startFrame, frameCount: framesLeft, at: nil) { [weak self] in
-                guard let self, self.activePlaybackID == seekID else { return }
-                DispatchQueue.main.async { completion?() }
+            // ⚠️ Do NOT change activePlaybackID here; keep the same track identity
+            // Reschedule with the ORIGINAL end-of-track completion
+            self.player.scheduleSegment(file,
+                                        startingFrame: startFrame,
+                                        frameCount: framesLeft,
+                                        at: nil) { [weak self] in
+                guard let self else { return }
+                // fire the stored end-of-track completion so autoplay still works
+                DispatchQueue.main.async { self.playbackCompletion?() }
             }
 
             self.player.play()
+
+            // Notify caller that the seek operation completed (UI update), immediately.
+            if let completion { DispatchQueue.main.async { completion() } }
         }
     }
 
@@ -132,6 +179,7 @@ final class AudioEngine {
     func stop() {
         player.stop()
         player.reset()
+        print("⏹️ AudioEngine.stop()")
         playbackCompletion = nil
         activePlaybackID = nil
         currentFile = nil
@@ -245,6 +293,7 @@ final class AudioEngine {
     private func prepareAndStart() {
         engine.prepare()        // pre-alloc render resources
         try? engine.start()     // keep running to avoid first-note glitch
+        print("⚙️ Engine prepared & started (running=\(engine.isRunning))")
     }
 
     private func setupInterruptions() {
@@ -321,5 +370,11 @@ final class AudioEngine {
                 }
             }
         }
+    }
+    
+    deinit {
+        currentScopeStopper?()
+        currentScopeStopper = nil
+        print("🧹 AudioEngine deinit — released any active scope")
     }
 }

@@ -1,37 +1,63 @@
 import Foundation
 
+/// Centralized store for folder-scoped security bookmarks.
+/// Keys are *normalized* file-system paths so that variants like
+/// "/private/var/..." and "/var/..." map to the same entry.
 final class BookmarkStore {
     static let shared = BookmarkStore()
 
     private let storageKey = "ScopedFolderBookmarks.v1"
-    // Use standardized, symlink-resolved paths as keys.
+
+    /// folderPath(normalized) -> bookmarkData
     private var bookmarks: [String: Data] = [:]
 
-    // Track which folders we’ve called startAccessing… on (standardized path).
+    /// Set of folderPath(normalized) we have called startAccessing… on.
     private var activeAccess: Set<String> = []
 
     private init() {
         if let dict = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: Data] {
-            // Normalize keys that may have been stored unstandardized in older builds
             var fixed: [String: Data] = [:]
             for (k, v) in dict {
-                let std = URL(fileURLWithPath: k).standardizedFileURL.resolvingSymlinksInPath().path
-                fixed[std] = v
+                fixed[Self.normalizePath(k)] = v
             }
             bookmarks = fixed
         }
     }
 
+    // MARK: - Path normalization
+
+    /// Normalizes a path for stable comparisons:
+    /// - standardizes & resolves symlinks
+    /// - strips a leading "/private" (File Provider vs. local differences)
+    /// - removes a trailing slash
+    private static func normalizePath(_ raw: String) -> String {
+        var p = URL(fileURLWithPath: raw)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+        if p.hasPrefix("/private") {
+            p.removeFirst("/private".count)
+        }
+        // drop trailing slash (except root)
+        if p.count > 1, p.hasSuffix("/") { p.removeLast() }
+        return p
+    }
+
     // MARK: - Save / remove
 
+    /// Persist a security-scoped bookmark for the given folder URL.
     func saveBookmark(forFolder folderURL: URL) {
         do {
-            let options: URL.BookmarkCreationOptions
-            if #available(iOS 13.0, *) { options = [.minimalBookmark] } else { options = [] }
+            let options: URL.BookmarkCreationOptions = {
+                if #available(iOS 13.0, *) { return [.minimalBookmark] }
+                else { return [] }
+            }()
 
-            let stdPath = folderURL.standardizedFileURL.resolvingSymlinksInPath().path
-            let data = try folderURL.bookmarkData(options: options, includingResourceValuesForKeys: nil, relativeTo: nil)
-            bookmarks[stdPath] = data
+            let key = Self.normalizePath(folderURL.path)
+            let data = try folderURL.bookmarkData(options: options,
+                                                  includingResourceValuesForKeys: nil,
+                                                  relativeTo: nil)
+            bookmarks[key] = data
             UserDefaults.standard.set(bookmarks, forKey: storageKey)
             print("🔖 Saved bookmark for folder: \(folderURL.lastPathComponent)")
         } catch {
@@ -40,47 +66,48 @@ final class BookmarkStore {
     }
 
     func removeBookmark(forFolderPath path: String) {
-        let stdPath = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
-        bookmarks.removeValue(forKey: stdPath)
+        let key = Self.normalizePath(path)
+        bookmarks.removeValue(forKey: key)
         UserDefaults.standard.set(bookmarks, forKey: storageKey)
-        // If it’s currently active, end it now.
-        if activeAccess.contains(stdPath) {
-            let u = URL(fileURLWithPath: stdPath)
-            u.stopAccessingSecurityScopedResource()
-            activeAccess.remove(stdPath)
-            print("🛑 Stopped scope for removed folder: \(stdPath)")
+        if activeAccess.contains(key) {
+            URL(fileURLWithPath: key).stopAccessingSecurityScopedResource()
+            activeAccess.remove(key)
+            print("🛑 Stopped scope for removed folder: \(key)")
         }
     }
 
     // MARK: - Resolve
 
     private func resolveFolderURL(fromStoredPath path: String) -> URL? {
-        let stdPath = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
-        guard let data = bookmarks[stdPath] else { return nil }
+        let key = Self.normalizePath(path)
+        guard let data = bookmarks[key] else { return nil }
         var stale = false
         do {
-            let url = try URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale)
+            let url = try URL(resolvingBookmarkData: data,
+                              options: [],
+                              relativeTo: nil,
+                              bookmarkDataIsStale: &stale)
             if stale {
                 let refreshed = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
-                bookmarks[stdPath] = refreshed
+                bookmarks[key] = refreshed
                 UserDefaults.standard.set(bookmarks, forKey: storageKey)
-                print("♻️ Refreshed stale bookmark for: \(stdPath)")
+                print("♻️ Refreshed stale bookmark for: \(key)")
             }
             return url
         } catch {
-            print("❌ Failed resolving bookmark for \(stdPath): \(error)")
+            print("❌ Failed resolving bookmark for \(key): \(error)")
             return nil
         }
     }
 
     private func bookmarkedParentFolder(for fileURL: URL) -> URL? {
-        let filePath = fileURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let filePath = Self.normalizePath(fileURL.path)
 
-        // 1) Exact parent hit
-        let parent = URL(fileURLWithPath: filePath).deletingLastPathComponent()
-        if let exact = resolveFolderURL(fromStoredPath: parent.path) { return exact }
+        // 1) Exact parent
+        let parent = URL(fileURLWithPath: filePath).deletingLastPathComponent().path
+        if let exact = resolveFolderURL(fromStoredPath: parent) { return exact }
 
-        // 2) Longest-prefix match against stored keys
+        // 2) Longest-prefix match across stored keys (handles nested bookmarks)
         for storedPath in bookmarks.keys.sorted(by: { $0.count > $1.count }) {
             if filePath.hasPrefix(storedPath + "/"), let resolved = resolveFolderURL(fromStoredPath: storedPath) {
                 return resolved
@@ -88,39 +115,40 @@ final class BookmarkStore {
         }
         return nil
     }
-    
-    // Return the resolved folder URLs for all stored bookmarks
+
+    /// All restored, resolved folder URLs for UI / rescans.
     func restoredFolderURLs() -> [URL] {
-        bookmarks.keys.compactMap { resolveFolderURL(fromStoredPath: $0) }
+        Array(bookmarks.keys.compactMap { resolveFolderURL(fromStoredPath: $0) })
     }
 
     // MARK: - Access control
 
     /// Begin access for the folder containing `fileURL` if we have a bookmark.
-    /// Returns true if access is active (new or already-active).
+    /// Returns true if access is active (newly started or already active).
     @discardableResult
     func beginAccessIfBookmarked(parentOf fileURL: URL) -> Bool {
         guard let folderURL = bookmarkedParentFolder(for: fileURL) else { return false }
-        let key = folderURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let key = Self.normalizePath(folderURL.path)
         if !activeAccess.contains(key) {
             if folderURL.startAccessingSecurityScopedResource() {
                 activeAccess.insert(key)
-                print("🔐 Started scope for: \(folderURL.lastPathComponent)")
                 return true
             } else {
                 print("⚠️ startAccessingSecurityScopedResource() failed for \(key)")
                 return false
             }
+        } else {
+            // Helpful debug so logs show why we didn't print another "Started" line
+            print("🔐 Using existing scope for: \(folderURL.lastPathComponent)")
+            return true
         }
-        // already active
-        return true
     }
 
     /// Stop access for the folder containing `fileURL`. Call this ONLY when the user
-    /// removes the folder from the app, or when you are intentionally releasing scopes.
+    /// removes the folder from the app, or when you intentionally release scopes.
     func endAccess(forFolderContaining fileURL: URL) {
         guard let folderURL = bookmarkedParentFolder(for: fileURL) else { return }
-        let key = folderURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let key = Self.normalizePath(folderURL.path)
         if activeAccess.contains(key) {
             folderURL.stopAccessingSecurityScopedResource()
             activeAccess.remove(key)
