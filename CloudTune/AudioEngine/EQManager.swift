@@ -1,18 +1,21 @@
+//
+//  EQManager.swift
+//  CloudTune
+//
+
 import AVFoundation
 
-/// Central place to control the app's EQ node safely.
-/// - Clamps gain to a safe range (±6 dB by default)
-/// - Coalesces rapid updates to avoid scheduling hiccups while the engine is rendering
+/// Coalesces rapid updates to avoid scheduling hiccups while the engine is rendering.
 final class EQManager {
     static let shared = EQManager()
 
     // MARK: Policy
-    /// Production-safe EQ range. You can make this user-configurable later.
+    /// Production-safe EQ range.
     private let gainMinDB: Float = -6.0
     private let gainMaxDB: Float =  6.0
 
-    // If the UI fires many changes quickly, we coalesce to this delay.
-    private let coalesceDelay: TimeInterval = 0.03 // 30 ms feels instantaneous but avoids choppy updates
+    /// If the UI fires many changes quickly, we coalesce to this delay.
+    private let coalesceDelay: TimeInterval = 0.03 // ~30 ms
 
     // MARK: Wiring
     private weak var eqNode: AVAudioUnitEQ?
@@ -22,16 +25,32 @@ final class EQManager {
     private let updateQueue = DispatchQueue(label: "eq.update.queue", qos: .userInitiated)
     private var pendingWork: DispatchWorkItem?
 
+    // MARK: Persistence keys
+    private let presetsKey        = "EQPresets"
+    private let customNamesKey    = "CustomPresetNames"
+    private let lastUsedGainsKey  = "LastUsedEQ"
+    private let lastUsedNameKey   = "LastUsedEQName"
+
+    // MARK: Built-ins
+    private let builtInPresets: [String: [Float]] = [
+        "Flat":         [ 0,  0,  0,  0,  0],
+        "Bass Boost":   [ 6,  3,  0, -2, -4],
+        "Vocal Boost":  [-2,  1,  4,  3,  0],
+        "Treble Boost": [-4, -2,  0,  2,  5],
+        "Lo-Fi":        [-6, -4,  0,  4,  6] // gets clamped anyway
+    ]
+
     private init() {}
 
-    // Call this once after AudioEngine is created (and the node is attached to the engine)
+    // MARK: Attach / boot
+    /// Call this once after AudioEngine is created (and the node is attached to the engine).
     func attach(eq: AVAudioUnitEQ, frequencies: [Float]? = nil) {
         self.eqNode = eq
         if let f = frequencies, f.count == eq.bands.count {
             self.bandFrequencies = f
         }
 
-        // Initialize band objects (type/bw) in case AudioEngine didn't already do it
+        // Ensure bands are configured
         for (i, freq) in bandFrequencies.enumerated() where i < eq.bands.count {
             let b = eq.bands[i]
             b.filterType = .parametric
@@ -40,8 +59,9 @@ final class EQManager {
             b.bypass = false
         }
 
-        // Apply last-used gains on app start (clamped)
-        setBands(loadLastUsed(), coalesce: false)
+        // Apply last-used gains on app start
+        let gains = loadLastUsed()
+        applyToEQ(gains)
     }
 
     // MARK: - Band control
@@ -52,12 +72,12 @@ final class EQManager {
         let clamped = clampGains(gains)
 
         // Persist immediately so a crash/quit doesn’t lose the state
-        saveLastUsed(clamped, presetName: nil)
+        // (presetName is handled separately by saveLastUsed(gains:presetName:))
+        UserDefaults.standard.set(clamped, forKey: lastUsedGainsKey)
 
-        guard let _ = eqNode else { return }
+        guard eqNode != nil else { return }
 
         if coalesce {
-            // Cancel any in-flight write and schedule a single update shortly
             pendingWork?.cancel()
             let work = DispatchWorkItem { [weak self] in
                 self?.applyToEQ(clamped)
@@ -69,7 +89,7 @@ final class EQManager {
         }
     }
 
-    /// Read current gains (for UI)
+    /// Read current gains (for UI).
     func getCurrentGains() -> [Float] {
         guard let eq = eqNode else { return Array(repeating: 0, count: bandFrequencies.count) }
         return eq.bands.prefix(bandFrequencies.count).map { $0.gain }
@@ -77,31 +97,9 @@ final class EQManager {
 
     // MARK: - Presets
 
-    private let builtInPresets: [String: [Float]] = [
-        "Flat":        [ 0,  0,  0,  0,  0],
-        "Bass Boost":  [ 6,  3,  0, -2, -4],
-        "Vocal Boost": [-2,  1,  4,  3,  0],
-        "Treble Boost":[-4, -2,  0,  2,  5],
-        "Lo-Fi":       [-6, -4,  0,  4,  6] // will be clamped to min/max automatically
-    ]
-
-    private let presetsKey      = "EQPresets"
-    private let customNamesKey  = "CustomPresetNames"
-    private let lastUsedGainsKey = "LastUsedEQ"
-    private let lastUsedNameKey  = "LastUsedEQName"
-
+    /// Last used preset name (for banner/startup).
     var lastUsedPresetName: String {
         UserDefaults.standard.string(forKey: lastUsedNameKey) ?? "Flat"
-    }
-
-    var activePresetName: String {
-        let gains = getCurrentGains()
-        if gains == builtInPresets["Flat"] { return "OFF" }
-        if let custom = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] {
-            for (name, storedGains) in custom where storedGains == gains { return name }
-        }
-        for (name, builtInGains) in builtInPresets where builtInGains == gains { return name }
-        return "Custom"
     }
 
     func loadPreset(named name: String) -> [Float] {
@@ -115,9 +113,9 @@ final class EQManager {
     func savePreset(name: String, gains: [Float]) {
         let safe = clampGains(gains)
         guard safe.count == bandFrequencies.count else { return }
-        var allPresets = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] ?? [:]
-        allPresets[name] = safe
-        UserDefaults.standard.set(allPresets, forKey: presetsKey)
+        var all = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] ?? [:]
+        all[name] = safe
+        UserDefaults.standard.set(all, forKey: presetsKey)
         saveCustomPresetName(name)
     }
 
@@ -135,15 +133,8 @@ final class EQManager {
         UserDefaults.standard.stringArray(forKey: customNamesKey) ?? []
     }
 
-    private func saveCustomPresetName(_ name: String) {
-        var names = loadCustomPresetNames()
-        if !names.contains(name) && names.count < 3 {
-            names.append(name)
-            UserDefaults.standard.set(names, forKey: customNamesKey)
-        }
-    }
-
-    func saveLastUsed(_ gains: [Float], presetName: String?) {
+    /// Persist both gains and (optionally) the preset name.
+    func saveLastUsed(gains: [Float], presetName: String?) {
         let safe = clampGains(gains)
         guard safe.count == bandFrequencies.count else { return }
         UserDefaults.standard.set(safe, forKey: lastUsedGainsKey)
@@ -154,6 +145,7 @@ final class EQManager {
         }
     }
 
+    /// Gains to apply on app start.
     func loadLastUsed() -> [Float] {
         if let gains = UserDefaults.standard.array(forKey: lastUsedGainsKey) as? [Float],
            gains.count == bandFrequencies.count {
@@ -168,8 +160,6 @@ final class EQManager {
     private func applyToEQ(_ gains: [Float]) {
         guard let eq = eqNode else { return }
         let safe = clampGains(gains)
-
-        // Update on main thread; AVAudioEngine prefers graph mutations from main.
         DispatchQueue.main.async {
             for (i, g) in safe.enumerated() where i < eq.bands.count {
                 eq.bands[i].gain = g
@@ -177,7 +167,7 @@ final class EQManager {
         }
     }
 
-    /// Ensures the array has the right length and each band is within [min, max].
+    /// Ensures array length & clamps each band within [min, max].
     private func clampGains(_ gains: [Float]) -> [Float] {
         var result = Array(gains.prefix(bandFrequencies.count))
         if result.count < bandFrequencies.count {
@@ -187,5 +177,51 @@ final class EQManager {
             result[i] = max(gainMinDB, min(gainMaxDB, result[i]))
         }
         return result
+    }
+
+    private func saveCustomPresetName(_ name: String) {
+        var names = loadCustomPresetNames()
+        if !names.contains(name) && names.count < 3 {
+            names.append(name)
+            UserDefaults.standard.set(names, forKey: customNamesKey)
+        }
+        
+    }
+    // MARK: - Active preset name (for UI banners, etc.)
+
+    /// Name of the preset that matches the *current* EQ gains.
+    /// If gains are edited relative to the last selection, returns "<lastUsedPresetName> (edited)".
+    var activePresetName: String {
+        let gains = getCurrentGains()
+        if let exact = matchPresetName(gains) {
+            return exact
+        }
+        // No exact match: keep the last-used name but mark as edited
+        let last = lastUsedPresetName
+        return "\(last) (edited)"
+    }
+
+    // Finds an exact preset name that matches the provided gains (built-in or custom).
+    private func matchPresetName(_ gains: [Float]) -> String? {
+        // Built-ins
+        for (name, vals) in builtInPresets {
+            if eqMatches(lhs: gains, rhs: vals) { return name }
+        }
+        // Customs
+        if let custom = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] {
+            for (name, vals) in custom where eqMatches(lhs: gains, rhs: vals) {
+                return name
+            }
+        }
+        return nil
+    }
+
+    // Float-array equality with tiny tolerance.
+    private func eqMatches(lhs: [Float], rhs: [Float]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        for i in 0..<lhs.count {
+            if abs(lhs[i] - rhs[i]) > 0.001 { return false }
+        }
+        return true
     }
 }
