@@ -3,6 +3,7 @@
 //  CloudTune
 //
 
+import Foundation
 import AVFoundation
 
 /// Coalesces rapid updates to avoid scheduling hiccups while the engine is rendering.
@@ -30,6 +31,51 @@ final class EQManager {
     private let customNamesKey    = "CustomPresetNames"
     private let lastUsedGainsKey  = "LastUsedEQ"
     private let lastUsedNameKey   = "LastUsedEQName"
+
+    // MARK: - Off-main disk persistence (presets)
+    private let ioQueue = DispatchQueue(label: "eq.io.queue", qos: .utility)
+
+    private func presetsFileURL() throws -> URL {
+        let fm = FileManager.default
+        let appSupport = try fm.url(for: .applicationSupportDirectory,
+                                    in: .userDomainMask,
+                                    appropriateFor: nil,
+                                    create: true)
+        let dir = appSupport.appendingPathComponent("CloudTune", isDirectory: true)
+        if !fm.fileExists(atPath: dir.path) {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir.appendingPathComponent("EQPresets.json")
+    }
+
+    private func readPresetsFromDisk() -> [String: [Float]] {
+        do {
+            let url = try presetsFileURL()
+            let data = try Data(contentsOf: url)
+            let decoded = try JSONDecoder().decode([String: [Float]].self, from: data)
+            return decoded
+        } catch {
+            // Fallback to any legacy presets stored in UserDefaults
+            if let legacy = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] {
+                return legacy
+            }
+            return [:]
+        }
+    }
+
+    private func writePresetsToDisk(_ presets: [String: [Float]]) {
+        ioQueue.async { [presets] in
+            do {
+                let data = try JSONEncoder().encode(presets)
+                let url = try self.presetsFileURL()
+                // Atomic write to avoid partial files
+                try data.write(to: url, options: .atomic)
+            } catch {
+                // As a last resort, keep legacy path updated (best-effort, still off-main)
+                UserDefaults.standard.set(presets, forKey: self.presetsKey)
+            }
+        }
+    }
 
     // MARK: - Built-ins
     private let builtInPresets: [String: [Float]] = [
@@ -109,26 +155,27 @@ final class EQManager {
     }
 
     func loadPreset(named name: String) -> [Float] {
-        if let custom = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]],
-           let gains = custom[name], gains.count == bandFrequencies.count {
+        let custom = readPresetsFromDisk()
+        if let gains = custom[name], gains.count == bandFrequencies.count {
             return clampGains(gains)
         }
         return clampGains(builtInPresets[name] ?? builtInPresets["Flat"]!)
     }
 
+    /// Writes are now off-main and atomic to prevent UI lag during EQ sheet actions.
     func savePreset(name: String, gains: [Float]) {
         let safe = clampGains(gains)
         guard safe.count == bandFrequencies.count else { return }
-        var all = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] ?? [:]
+        var all = readPresetsFromDisk()
         all[name] = safe
-        UserDefaults.standard.set(all, forKey: presetsKey)
+        writePresetsToDisk(all) // off-main, atomic
         saveCustomPresetName(name)
     }
 
     func deleteCustomPreset(named name: String) {
-        var all = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] ?? [:]
+        var all = readPresetsFromDisk()
         all.removeValue(forKey: name)
-        UserDefaults.standard.set(all, forKey: presetsKey)
+        writePresetsToDisk(all) // off-main, atomic
 
         var names = loadCustomPresetNames()
         names.removeAll { $0 == name }
@@ -136,7 +183,9 @@ final class EQManager {
     }
 
     func loadCustomPresetNames() -> [String] {
-        UserDefaults.standard.stringArray(forKey: customNamesKey) ?? []
+        let disk = readPresetsFromDisk()
+        if !disk.isEmpty { return Array(disk.keys) }
+        return UserDefaults.standard.stringArray(forKey: customNamesKey) ?? []
     }
 
     /// Persist both gains and (optionally) the preset name.
@@ -237,3 +286,4 @@ extension EQManager {
         audio.seek(to: time, completion: completion)
     }
 }
+	
