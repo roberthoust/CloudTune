@@ -40,9 +40,7 @@ struct SettingsView: View {
                         await MainActor.run { importState.isImporting = true }
                         let folder = url.deletingLastPathComponent()
                         await libraryVM.importAndEnrich(folder)
-                        await MainActor.run {
-                            importState.isImporting = false
-                        }
+                        await MainActor.run { importState.isImporting = false }
                     }
                 case .failure(let error):
                     print("❌ Failed to import song: \(error)")
@@ -79,6 +77,8 @@ struct SettingsView: View {
                 Label("Import New Folder", systemImage: "folder.badge.plus")
                     .fontWeight(.medium)
                     .padding(.vertical, 6)
+                    .foregroundStyle(.tint)
+                    .symbolRenderingMode(.monochrome)
             }
             .tint(Color("appAccent"))
 
@@ -88,6 +88,8 @@ struct SettingsView: View {
                 Label("Import Song", systemImage: "music.note")
                     .fontWeight(.medium)
                     .padding(.vertical, 6)
+                    .foregroundStyle(.tint)
+                    .symbolRenderingMode(.monochrome)
             }
             .tint(Color("appAccent"))
 
@@ -95,6 +97,8 @@ struct SettingsView: View {
                 Label("Manage Imports", systemImage: "folder")
                     .fontWeight(.medium)
                     .padding(.vertical, 6)
+                    .foregroundStyle(.tint)
+                    .symbolRenderingMode(.monochrome)
             }
             .tint(Color("appAccent"))
         }
@@ -107,11 +111,9 @@ struct SettingsView: View {
                 Task {
                     await MainActor.run { importState.isImporting = true }
 
-                    // 1) Remove missing files
                     let removed = await libraryVM.pruneMissingFiles()
                     print("🧹 Removed \(removed) missing items")
 
-                    // 2) Re-scan saved folders concurrently for speed
                     await withTaskGroup(of: Void.self) { group in
                         for folder in libraryVM.savedFolders {
                             group.addTask { await libraryVM.loadSongs(from: folder) }
@@ -125,6 +127,8 @@ struct SettingsView: View {
                 Label("Refresh Files", systemImage: "arrow.clockwise.circle")
                     .fontWeight(.medium)
                     .padding(.vertical, 6)
+                    .foregroundStyle(.tint)
+                    .symbolRenderingMode(.monochrome)
             }
             .tint(Color("appAccent"))
 
@@ -137,6 +141,10 @@ struct SettingsView: View {
                 }
             } label: {
                 Label("Force Remove Missing Files", systemImage: "trash")
+                    .fontWeight(.medium)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(.tint)
+                    .symbolRenderingMode(.monochrome)
             }
             .tint(Color("appAccent"))
         }
@@ -209,6 +217,8 @@ struct ImportManagerView: View {
                                         .padding(8)
                                         .background(Color.red.opacity(0.15))
                                         .clipShape(Circle())
+                                        .foregroundStyle(.tint)
+                                        .symbolRenderingMode(.monochrome)
                                 }
                                 .tint(.red)
                                 .buttonStyle(BorderlessButtonStyle())

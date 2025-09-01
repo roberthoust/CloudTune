@@ -47,7 +47,6 @@ struct SearchView: View {
             }
             .padding(.top)
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always))
-            .background(Color("AppBackground").ignoresSafeArea())
             .fullScreenCover(isPresented: $isPresentingPlayer) {
                 PlayerView()
                     .environmentObject(playbackVM)

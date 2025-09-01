@@ -40,12 +40,15 @@ struct EQSettingsView: View {
         "Lo-Fi": [-6, -4, 0, 4, 6]
     ]
 
+    // “Dirty” means the sliders differ from the base values of the selected preset.
     private var isDirty: Bool {
         let base: [Float]
         if let builtin = builtInPresets[selectedPresetName] {
             base = builtin
         } else if let cached = selectedPresetGainsCache {
             base = cached
+        } else if EQManager.shared.loadCustomPresetNames().contains(selectedPresetName) {
+            base = EQManager.shared.loadPreset(named: selectedPresetName) ?? builtInPresets["Flat"]!
         } else {
             return false
         }
@@ -344,19 +347,33 @@ struct EQSettingsView: View {
     // MARK: - Actions
 
     private func applyPreset(named name: String) {
-        let values = gainsForPreset(name) ?? builtInPresets["Flat"]!
+        // Resolve values BEFORE changing selected name to avoid a temporary nil cache.
+        let resolvedValues = gainsForPreset(name) ?? builtInPresets["Flat"]!
         selectedPresetName = name
-        gains = values
-        EQManager.shared.setBands(values)
-        EQManager.shared.saveLastUsed(gains: values, presetName: name)
-        refreshSelectedCache(for: name)
+        gains = resolvedValues
+        selectedPresetGainsCache = resolvedValues
+
+        EQManager.shared.setBands(resolvedValues)
+        EQManager.shared.saveLastUsed(gains: resolvedValues, presetName: name)
     }
 
     // MARK: - Helpers
 
+    /// Returns gains for either a built-in or a custom preset name.
+    /// If the cache isn't ready for a custom preset, read once from EQManager.
     private func gainsForPreset(_ name: String) -> [Float]? {
         if let vals = builtInPresets[name] { return vals }
-        if name == selectedPresetName { return selectedPresetGainsCache }
+
+        // If we already have the cache for the *current* selected preset
+        if name == selectedPresetName, let cached = selectedPresetGainsCache {
+            return cached
+        }
+
+        // Fallback: read directly if this custom preset exists
+        let names = EQManager.shared.loadCustomPresetNames()
+        if names.contains(name) {
+            return EQManager.shared.loadPreset(named: name)
+        }
         return nil
     }
 
@@ -371,8 +388,10 @@ struct EQSettingsView: View {
     private func refreshSelectedCache(for name: String) {
         if let builtin = builtInPresets[name] {
             selectedPresetGainsCache = builtin
-        } else {
+        } else if EQManager.shared.loadCustomPresetNames().contains(name) {
             selectedPresetGainsCache = EQManager.shared.loadPreset(named: name)
+        } else {
+            selectedPresetGainsCache = nil
         }
     }
 
@@ -383,4 +402,4 @@ struct EQSettingsView: View {
         }
         return true
     }
-}
+}   
