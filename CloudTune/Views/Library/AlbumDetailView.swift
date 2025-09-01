@@ -208,6 +208,7 @@ struct AlbumDetailView: View {
             // Quick actions (Play / Shuffle) matching FolderDetailView
             HStack(spacing: 12) {
                 Button {
+                    playbackVM.isShuffle = false
                     let list = sorted(songs)
                     guard let first = list.first else { return }
                     playbackVM.play(song: first, in: list, contextName: albumName)
@@ -221,9 +222,20 @@ struct AlbumDetailView: View {
                 }
 
                 Button {
-                    let list = sorted(songs).shuffled()
-                    guard let first = list.first else { return }
-                    playbackVM.play(song: first, in: list, contextName: albumName + " • Shuffled")
+                    let list = sorted(songs)
+                    guard !list.isEmpty else { return }
+
+                    // Turn on shuffle mode in the player UI/state
+                    playbackVM.isShuffle = true
+
+                    // Start on a random index rather than shuffling the array and starting at 0
+                    let startIndex = Int.random(in: 0..<list.count)
+                    let startSong = list[startIndex]
+
+                    // Keep the VM's index in sync so Next/Previous work as expected
+                    playbackVM.currentIndex = startIndex
+
+                    playbackVM.play(song: startSong, in: list, contextName: albumName + " • Shuffled")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { isPresentingPlayer = true }
                 } label: {
                     Label("Shuffle", systemImage: "shuffle")

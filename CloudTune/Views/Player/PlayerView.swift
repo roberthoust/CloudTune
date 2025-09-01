@@ -24,6 +24,9 @@ private struct ArtworkView: View, Equatable {
     let hasArtwork: Bool
 
     @State private var image: UIImage?
+    @State private var imageOpacity: Double = 0.0
+    @State private var pendingKey: String?
+    @State private var decodeToken = UUID()
 
     var body: some View {
         ZStack {
@@ -40,29 +43,40 @@ private struct ArtworkView: View, Equatable {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
-                } else {
-                    Image("DefaultCover")
-                        .resizable()
-                        .scaledToFill()
+                        .opacity(imageOpacity)
+                        .transition(.opacity)
                 }
             }
             .frame(width: side, height: side)
             .clipShape(RoundedRectangle(cornerRadius: 20))
         }
         .onAppear(perform: decodeIfNeeded)
-        .onChange(of: songKey) { _ in decodeIfNeeded() }
+        .onChange(of: songKey) { _ in
+            decodeToken = UUID()   // invalidate any in-flight decode
+            decodeIfNeeded()
+        }
+        .onChange(of: artworkData?.count) { _ in
+            decodeToken = UUID()   // invalidate in-flight decode because data changed
+            decodeIfNeeded()
+        }
     }
 
     private func decodeIfNeeded() {
         // 1) Cache hit?
         let cacheKey = NSString(string: "\(songKey)-\(Int(side))")
+        let keyForThisDecode = "\(songKey)-\(Int(side))"
+        let tokenForThisDecode = decodeToken
+        pendingKey = keyForThisDecode
         if let cached = ArtworkCache.shared.object(forKey: cacheKey) {
-            image = cached
+            pendingKey = keyForThisDecode
+            // Only apply if we're still decoding for the same song
+            guard tokenForThisDecode == decodeToken else { return }
+            setImageWithFade(cached)
             return
         }
         // 2) No artwork? show default and bail.
         guard let artworkData, hasArtwork else {
-            image = nil
+            setImageWithFade(nil)
             return
         }
         // 3) Decode off-main, generate a sized thumbnail, then cache.
@@ -78,13 +92,30 @@ private struct ArtworkView: View, Equatable {
                 full.draw(in: CGRect(origin: .zero, size: target))
             }
             await MainActor.run {
+                // Bail if a newer song arrived while we were decoding
+                guard pendingKey == keyForThisDecode, tokenForThisDecode == decodeToken else { return }
                 ArtworkCache.shared.setObject(
                     thumb,
                     forKey: cacheKey,
                     cost: (thumb.cgImage?.bytesPerRow ?? 0) * (thumb.cgImage?.height ?? 0)
                 )
-                image = thumb
+                setImageWithFade(thumb)
             }
+        }
+    }
+
+    private func setImageWithFade(_ newImage: UIImage?) {
+        // If nothing changed, skip animations
+        if let current = image, let next = newImage, current.pngData() == next.pngData() {
+            imageOpacity = 1.0
+            image = next
+            return
+        }
+        image = newImage
+        // Start from transparent and fade in
+        imageOpacity = 0.0
+        withAnimation(.easeInOut(duration: 0.25)) {
+            imageOpacity = 1.0
         }
     }
 }
@@ -162,6 +193,7 @@ struct PlayerView: View {
                     side: 240,
                     hasArtwork: song.artwork != nil
                 )
+                .id(song.id) // ensure state is reset per track
 
                 NowPlayingLabels(
                     title: song.displayTitle,

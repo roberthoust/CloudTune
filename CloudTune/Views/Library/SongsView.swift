@@ -150,8 +150,9 @@ struct SongRow: View {
         .padding(.horizontal, 14)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color(.systemGray5))
-                .shadow(color: Color.black.opacity(0.04), radius: 2, x: 0, y: 1)
+                .fill(Color(.secondarySystemBackground))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color("appAccent").opacity(0.2), lineWidth: 1))
+                .shadow(color: Color("appAccent").opacity(0.25), radius: 4, x: 0, y: 2)
         )
     }
 }
