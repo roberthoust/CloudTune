@@ -150,8 +150,19 @@ final class EQManager {
     /// If gains are edited relative to the last selection, returns "<lastUsedPresetName> (edited)".
     var activePresetName: String {
         let gains = getCurrentGains()
+        let lastName = lastUsedPresetName
+
+        // If current gains match the last-used preset's values (built-in or custom), return that name.
+        if let base = (builtInPresets[lastName] ?? readPresetsFromDisk()[lastName]),
+           eqMatches(lhs: gains, rhs: base) {
+            return lastName
+        }
+
+        // Otherwise search all presets (built-in + custom on disk + legacy defaults) for an exact match.
         if let exact = matchPresetName(gains) { return exact }
-        return "\(lastUsedPresetName) (edited)"
+
+        // Not an exact match: show "(edited)" on top of the last-used preset name.
+        return "\(lastName) (edited)"
     }
 
     func loadPreset(named name: String) -> [Float] {
@@ -250,9 +261,22 @@ final class EQManager {
 
     // Finds an exact preset name that matches the provided gains (built-in or custom).
     private func matchPresetName(_ gains: [Float]) -> String? {
-        for (name, vals) in builtInPresets where eqMatches(lhs: gains, rhs: vals) { return name }
-        if let custom = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] {
-            for (name, vals) in custom where eqMatches(lhs: gains, rhs: vals) { return name }
+        // Check built-ins first
+        for (name, vals) in builtInPresets where eqMatches(lhs: gains, rhs: vals) {
+            return name
+        }
+
+        // Then check custom presets stored on disk (authoritative)
+        let diskPresets = readPresetsFromDisk()
+        for (name, vals) in diskPresets where eqMatches(lhs: gains, rhs: vals) {
+            return name
+        }
+
+        // Finally, for back-compat, check any legacy presets in UserDefaults
+        if let legacy = UserDefaults.standard.dictionary(forKey: presetsKey) as? [String: [Float]] {
+            for (name, vals) in legacy where eqMatches(lhs: gains, rhs: vals) {
+                return name
+            }
         }
         return nil
     }
@@ -286,4 +310,4 @@ extension EQManager {
         audio.seek(to: time, completion: completion)
     }
 }
-	
+    
