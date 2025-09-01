@@ -31,6 +31,7 @@ struct LibraryView: View {
                         VStack(spacing: 16) {
                             LibraryNavTile(title: "Songs", icon: "music.note", destination: SongsView())
                             LibraryNavTile(title: "Albums", icon: "rectangle.stack", destination: AlbumsView())
+                            LibraryNavTile(title: "Folders", icon: "rectangle.stack", destination: FoldersView())
                             LibraryNavTile(title: "Playlists", icon: "text.badge.plus", destination: PlaylistScreen())
                         }
                         .padding(.horizontal)
@@ -41,11 +42,8 @@ struct LibraryView: View {
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Menu {
-                            Button("Import Folder") {
+                            Button("Import Album/Folder") {
                                 showFolderPicker = true
-                            }
-                            Button("Import Song") {
-                                // Future: Song picker logic
                             }
                             Button("Import from Cloud") {
                                 // Future: Trigger cloud import or paywall

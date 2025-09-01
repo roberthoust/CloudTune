@@ -449,3 +449,10 @@ private extension Array {
         return result
     }
 }
+
+// LibraryViewModel.swift
+extension LibraryViewModel {
+    func songs(in folder: URL) -> [Song] {
+        songs.filter { $0.fileURL.path.hasPrefix(folder.standardizedFileURL.path) }
+    }
+}

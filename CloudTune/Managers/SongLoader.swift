@@ -49,11 +49,12 @@ class SongLoader {
                 """)
 
                 // Try fetching artwork from API as first priority
+                // After enrichment attempt
                 if enriched.artwork == nil {
                     if let apiArtwork = try? await MetadataEnricher.fetchArtwork(for: enriched) {
                         enriched.artwork = apiArtwork
                     } else {
-                        enriched.artwork = fallbackArtwork ?? rawSong.artwork
+                        enriched.artwork = fallbackArtwork ?? rawSong.artwork ?? defaultCoverData()
                     }
                 }
 
@@ -67,8 +68,9 @@ class SongLoader {
                 // Fallback to raw song if enrichment failed
                 print("⚠️ Enrichment failed for \(rawSong.title). Using fallback metadata.")
                 var fallback = rawSong
-                if fallback.artwork == nil { fallback.artwork = fallbackArtwork }
-                print("📦 Fallback Metadata — Title: \(fallback.title), Artist: \(fallback.artist), Album: \(fallback.album), Track: \(fallback.trackNumber ?? 0)")
+                if fallback.artwork == nil {
+                    fallback.artwork = fallbackArtwork ?? defaultCoverData()
+                }
                 songs.append(fallback)
             }
         }
@@ -101,6 +103,10 @@ class SongLoader {
             .sorted { $0.1 > $1.1 }
             .first
             .flatMap { try? Data(contentsOf: $0.0) }
+    }
+    private static func defaultCoverData() -> Data? {
+        guard let image = UIImage(named: "DefaultCover") else { return nil }
+        return image.pngData()
     }
 
     /// Extract AVMetadata and fallback fields from a file.

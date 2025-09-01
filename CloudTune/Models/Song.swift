@@ -117,3 +117,8 @@ struct Song: Identifiable, Codable, Equatable {
         return hash.map { String(format: "%02hhx", $0) }.joined()
     }
 }
+extension Song {
+    var fileURL: URL {
+        return url
+    }
+}
