@@ -21,6 +21,29 @@ struct PlayerView: View {
             }
         }
     }
+    
+    // Bindings to split presentation styles: sheet for EQ, full-screen for AddToPlaylist
+    private var eqSheetBinding: Binding<ActiveSheet?> {
+        Binding(
+            get: {
+                if case .eq = activeSheet { return activeSheet } else { return nil }
+            },
+            set: { newValue in
+                if newValue == nil { activeSheet = nil }
+            }
+        )
+    }
+    
+    private var addToPlaylistSheetBinding: Binding<ActiveSheet?> {
+        Binding(
+            get: {
+                if case .addToPlaylist = activeSheet { return activeSheet } else { return nil }
+            },
+            set: { newValue in
+                if newValue == nil { activeSheet = nil }
+            }
+        )
+    }
 
     private func formatTime(_ seconds: Double) -> String {
         let mins = Int(seconds) / 60
@@ -196,6 +219,7 @@ struct PlayerView: View {
         .padding()
         .background(.ultraThinMaterial)
         .edgesIgnoringSafeArea(.bottom)
+        .ignoresSafeArea(.keyboard)
         
         .confirmationDialog("More Actions", isPresented: $showMoreActions, titleVisibility: .visible) {
             if let current = playbackVM.currentSong {
@@ -209,14 +233,21 @@ struct PlayerView: View {
                 showMoreActions = false
             }
         }
-        .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .eq:
-                EQSettingsView()
-            case .addToPlaylist(let song):
+        // Keep EQ as a regular sheet (no background movement expected)
+        .sheet(item: eqSheetBinding) { _ in
+            EQSettingsView()
+                .ignoresSafeArea(.keyboard)
+                .presentationDetents([.large])
+                .presentationBackgroundInteraction(.disabled)
+        }
+        
+        // Present Add To Playlist as a full-screen cover to fully decouple the background
+        .fullScreenCover(item: addToPlaylistSheetBinding) { sheet in
+            if case .addToPlaylist(let song) = sheet {
                 AddToPlaylistSheet(song: song, selectedPlaylist: .constant(nil))
                     .environmentObject(playlistVM)
                     .environmentObject(playbackVM)
+                    .ignoresSafeArea(.keyboard)
             }
         }
     }
