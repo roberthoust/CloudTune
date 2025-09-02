@@ -140,28 +140,37 @@ class PlaybackViewModel: NSObject, ObservableObject {
         let incoming = queue.isEmpty ? [song] : queue
         let reorderedQueue = incoming
 
-        // 2) Rebuild indices / queues with correct shuffle semantics:
-        //    - If shuffle is ON: the tapped song should play NOW, and the remainder should be shuffled *after* it.
-        //    - If shuffle is OFF: preserve the incoming order and set index to the tapped song.
-        originalQueue = reorderedQueue
+        // 2) Rebuild indices / queues with correct shuffle semantics **without** re-shuffling on every play():
+        //    - If the incoming queue changed, update `originalQueue`.
+        //    - If shuffle is ON and this is a new queue (or first time), build a shuffled list with the
+        //      selected song first and the remaining songs randomized **after** it.
+        //    - If shuffle is ON and the queue is the same, DO NOT reshuffle; just move to the tapped song
+        //      within the existing shuffled order so back/forward remain stable.
+        let isSameQueue = (reorderedQueue == originalQueue)
+        if !isSameQueue { originalQueue = reorderedQueue }
+
         if isShuffle {
-            // Build shuffled queue with the selected song first, others randomized after it.
-            var rest = reorderedQueue
-            if let sel = rest.firstIndex(of: song) {
-                let selected = rest.remove(at: sel)
-                shuffledQueue = [selected] + rest.shuffled()
-            } else {
-                // Fallback: shuffle everything, then ensure selected (if present) is front.
-                shuffledQueue = reorderedQueue.shuffled()
-                if let idx = shuffledQueue.firstIndex(of: song) {
-                    shuffledQueue.swapAt(0, idx)
+            if !isSameQueue || shuffledQueue.isEmpty {
+                // Build shuffled queue with the selected song first, others randomized after it.
+                var rest = originalQueue
+                if let sel = rest.firstIndex(of: song) {
+                    let selected = rest.remove(at: sel)
+                    shuffledQueue = [selected] + rest.shuffled()
+                } else {
+                    // Fallback: shuffle everything, then ensure selected (if present) is first.
+                    shuffledQueue = originalQueue.shuffled()
+                    if let idx = shuffledQueue.firstIndex(of: song) {
+                        shuffledQueue.swapAt(0, idx)
+                    }
                 }
+                currentIndex = 0
+            } else {
+                // Preserve existing shuffled order; jump to the tapped song within it.
+                currentIndex = shuffledQueue.firstIndex(of: song) ?? 0
             }
-            currentIndex = 0 // the selected song is at the front
         } else {
-            // No shuffle — honor the provided order exactly.
-            currentIndex = reorderedQueue.firstIndex(of: song) ?? 0
-            shuffledQueue = [] // not used when shuffle is off
+            // No shuffle — honor the provided order exactly and do not touch `shuffledQueue`.
+            currentIndex = originalQueue.firstIndex(of: song) ?? 0
         }
 
         currentSong = songQueue[currentIndex]

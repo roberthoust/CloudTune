@@ -234,6 +234,7 @@ final class LibraryViewModel: ObservableObject {
         }
         return folderURL.lastPathComponent
     }
+    
 
     private func appendSongs(_ newSongs: [Song], from folderURL: URL) async {
         // Keep folder list in sync (no duplicate paths)

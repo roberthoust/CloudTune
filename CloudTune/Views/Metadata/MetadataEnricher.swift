@@ -2,16 +2,56 @@
 //  MetadataEnricher.swift
 //  CloudTune
 //
-//  “Bulletproof” enrichment for MP3/MP4/FLAC:
-//  - Local tags first (ID3/iTunes/Vorbis)
-//  - Folder hints + filename cleanup
-//  - MusicBrainz with duration filter + scoring + confidence gate
-//  - Deezer fallback for album/duration/link
-//  - Cover Art via release → release-group
-//  - Rate-limit, retries, timeouts, in-memory cache
+//  One-pass, defensive enrichment for MP3/MP4/FLAC
+//  EXACT PIPELINE (what we do, in order):
+//  ┌────────────────────────────────────────────────────────────────────────────┐
+//  │ 1) Read LOCAL TAGS (ID3 / iTunes atoms / Vorbis)                          │
+//  │    - title, artist, album, year, track, disc, duration                    │
+//  │    - albumArtist (TPE2/Band for ID3, ©alb "Album Artist" for iTunes)      │
+//  │    - If artist is missing/placeholder or equals album, use albumArtist.   │
+//  │                                                                            │
+//  │ 2) FOLDER HINTS + FILENAME PARSING                                        │
+//  │    - folderHints: infer (Artist, Album) from ".../Artist/Album/track.ext" │
+//  │    - splitArtistTitle: parse filename patterns like                        │
+//  │      "01 - Artist - Title", "Artist – Title", "Artist - Title".           │
+//  │    - Fill only EMPTY/placeholder fields. Avoid overwriting good tags.     │
+//  │                                                                            │
+//  │ 3) MUSICBRAINZ RECORDING SEARCH (rate-limited, cached)                    │
+//  │    - Build a Lucene query:                                                 │
+//  │        recording:"<title>"^3 AND artist:"<artist>"^2                      │
+//  │        AND dur:[<ms-5000> TO <ms+5000>] (if duration available)           │
+//  │    - GET: /ws/2/recording/?query=...&fmt=json&limit=5&inc=releases        │
+//  │    - Score candidates using title/artist similarity, folder hints,         │
+//  │      and duration window. Accept only if score ≥ confidenceThreshold (0.70).│
+//  │    - If accepted:                                                         │
+//  │       * Overwrite title if better                                          │
+//  │       * Overwrite artist if shouldReplaceArtist(...) allows it             │
+//  │       * Set album (from first release), store release + release-group IDs  │
+//  │       * Optionally fetch release detail to refine year/track/disc          │
+//  │                                                                            │
+//  │ 3b) FALLBACK MB QUERY USING FILENAME-PARSED ARTIST/TITLE                   │
+//  │    - If the first MB query is below threshold, retry with parsed artist/title│
+//  │      (useful when local tags are wrong).                                   │
+//  │                                                                            │
+//  │ 4) COVER ART ARCHIVE (if we have release or release-group):                │
+//  │    - Try /release/<id>/front-250, then /release-group/<id>/front-250      │
+//  │    - Cache in-memory, write JPEG sidecar next to audio file.               │
+//  │                                                                            │
+//  │ 5) DEEZER FALLBACK (fills only album/duration/link):                       │
+//  │    - GET: /search?q=track:"<title>" artist:"<artist>"                     │
+//  │    - Use only to fill missing album / duration / external link.            │
+//  │    - Replace artist ONLY if placeholder or equals album (weak signal).     │
+//  │                                                                            │
+//  │ 6) WRITE SIDECAR JSON                                                      │
+//  │    - .metadata/<filename>.json with: source, confidence, title, artist,    │
+//  │      album, year, track, disc, duration, MBID, externalURL.               │
+//  └────────────────────────────────────────────────────────────────────────────┘
 //
-//  Requires iOS 15+ (Swift Concurrency)
-//
+//  Notes
+//  - We never overwrite good data with placeholders ("Unknown", "No Album", etc.).
+//  - We fix the common bad-tag case where Artist == Album.
+//  - Artist replacement is guarded by shouldReplaceArtist(...), using confidence + heuristics.
+//  - All network calls have timeouts, retries, simple in-memory caching, and polite MB headers.
 
 import Foundation
 import AVFoundation
@@ -36,16 +76,15 @@ import OSLog
 // MARK: - Config
 
 private enum EnricherConfig {
-    // ✅ SET THIS to your real contact info — MusicBrainz requires it.
     static let musicBrainzUserAgent = "CloudTune/1.0 (contact: support@cloudtune.app)"
     static let musicBrainzBase = "https://musicbrainz.org/ws/2"
     static let coverArtBase = "https://coverartarchive.org"
     static let deezerBase = "https://api.deezer.com"
 
     static let requestTimeout: TimeInterval = 12
-    static let musicBrainzRateLimit: TimeInterval = 1.1  // ≥1 req/sec across app
+    static let musicBrainzRateLimit: TimeInterval = 1.1  // ≥1 req/sec app-wide
     static let maxRetries = 2
-    static let confidenceThreshold = 0.70                 // only overwrite if ≥ 0.70
+    static let confidenceThreshold = 0.70                 // accept MB only if ≥ 0.70
 }
 
 private let log = Logger(subsystem: "app.cloudtune", category: "enrichment")
@@ -134,15 +173,24 @@ private struct HTTP {
     }
 }
 
-// MARK: - String cleaning & filename parsing
+// MARK: - String cleaning & parsing
 
+private func isPlaceholder(_ s: String) -> Bool {
+    let t = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return t.isEmpty || t == "no album" || t == "unknown album" || t == "unknown artist" || t == "unknown"
+}
+
+/// Normalizes a raw title/filename:
+/// - Converts `_` and `.` to spaces
+/// - Removes bracketed/parenthetical noise like `[Official Video]`, `(Lyrics)`
+/// - Drops common quality tags like `320kbps`
+/// - Collapses multiple spaces
 private func normalizeTitle(_ s: String) -> String {
     var t = s
-    // Replace underscores/dots, then strip common noise like [Official Video], (Lyrics), 320kbps, etc.
     t = t.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: ".", with: " ")
     let noise = [
         #"\[(.*?)\]"#, #"\((.*?)\)"#,
-        #"(?i)\b(official\s*video|lyrics?|remaster(ed)?\s*\d{2,4}|audio|HD|4K|8K|mv|feat\.?.*?)\b"#,
+        #"(?i)\b(official\s*video|lyrics?|remaster(ed)?\s*\d{2,4}|audio|HD|4K|8K|mv|feat\.?\s*.*?)\b"#,
         #"(?i)\b\d{3,4}\s*kbps\b"#
     ]
     for p in noise { t = t.replacingOccurrences(of: p, with: "", options: .regularExpression) }
@@ -151,7 +199,11 @@ private func normalizeTitle(_ s: String) -> String {
     return t
 }
 
-/// Splits "01 - Artist - Title" / "Artist – Title" etc.; falls back to filename + optional artist.
+/// Parses common filename patterns into (artist,title) using separators (`-`, `–`, `—`)
+/// Examples:
+///   "01 - Artist - Title" → ("Artist", "Title")
+///   "Artist – Title"      → ("Artist", "Title")
+/// Fall back to the provided `fallbackArtist` if no artist pattern is detected.
 private func splitArtistTitle(_ raw: String, fallbackArtist: String?) -> (artist: String?, title: String) {
     let cleaned = normalizeTitle(raw)
     let seps = [" - ", " – ", " — ", "- ", " –", " —"]
@@ -168,12 +220,37 @@ private func splitArtistTitle(_ raw: String, fallbackArtist: String?) -> (artist
     return (artist: (fallbackArtist?.isEmpty == false ? fallbackArtist : nil), title: cleaned)
 }
 
+private func similarity(_ a: String, _ b: String) -> Double {
+    // Keep only letters for a forgiving comparison, then compare the common prefix length.
+    let na = a.lowercased().components(separatedBy: CharacterSet.letters.inverted).joined()
+    let nb = b.lowercased().components(separatedBy: CharacterSet.letters.inverted).joined()
+    if na.isEmpty || nb.isEmpty { return 0 }
+    if na == nb { return 1 }
+    let minLen = min(na.count, nb.count)
+    let prefixEq = na.commonPrefix(with: nb).count
+    return max(Double(prefixEq) / Double(minLen), 0.0)
+}
+
+private func coalesce(_ new: String?, _ old: String) -> String {
+    let n = (new ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return n.isEmpty ? old : n
+}
+
+private func coalesceSmart(_ new: String?, _ old: String) -> String {
+    let n = (new ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if isPlaceholder(n) { return old }
+    return n.isEmpty ? old : n
+}
+
+private func coalesceInt(_ new: Int?, _ old: Int) -> Int { (new ?? 0) != 0 ? (new ?? 0) : old }
+
 // MARK: - Local tag reading
 
 private struct LocalProbeResult {
     let title: String?
     let artist: String?
     let album: String?
+    let albumArtist: String?
     let year: String?
     let trackNumber: Int?
     let discNumber: Int?
@@ -204,6 +281,15 @@ private func readFlacInfoDictionary(_ url: URL) -> [String:String] {
     return out
 }
 
+/// Reads local metadata from the file:
+/// - MP3/MP4 (via AVFoundation common/ID3/iTunes atoms)
+/// - FLAC (Vorbis Comments via AudioToolbox), then duration via AVURLAsset
+/// Fields populated (if present):
+///   title, artist, album, albumArtist (TPE2/Band / iTunes Album Artist),
+///   year (YYYY truncated), trackNumber, discNumber, durationSec
+/// IMPORTANT:
+/// - We DO NOT overwrite existing non-placeholder fields later unless MB confidence allows it
+/// - If `artist` is missing/placeholder or equals `album`, we prefer `albumArtist` at step 0.
 private func readLocalTags(from url: URL) -> LocalProbeResult {
     let ext = url.pathExtension.lowercased()
 
@@ -221,6 +307,7 @@ private func readLocalTags(from url: URL) -> LocalProbeResult {
             title: d["title"],
             artist: d["artist"],
             album: d["album"],
+            albumArtist: (d["album artist"] ?? d["albumartist"] ?? d["album_artist"]),
             year: year,
             trackNumber: parseInt(d["tracknumber"]),
             discNumber: parseInt(d["discnumber"]),
@@ -231,6 +318,11 @@ private func readLocalTags(from url: URL) -> LocalProbeResult {
     // 2) Other containers (MP3/MP4) → AVFoundation common/ID3/iTunes atoms
     let asset = AVURLAsset(url: url)
     let meta = asset.commonMetadata
+
+    // Album Artist (iTunes + ID3 TPE2/Band)
+    let albumArtist =
+        AVMetadataItem.metadataItems(from: meta, filteredByIdentifier: .iTunesMetadataAlbumArtist).first?.stringValue
+        ?? AVMetadataItem.metadataItems(from: meta, filteredByIdentifier: .id3MetadataBand).first?.stringValue
 
     func string(_ key: AVMetadataKey, keySpace: AVMetadataKeySpace) -> String? {
         AVMetadataItem.metadataItems(from: meta, withKey: key, keySpace: keySpace).first?.stringValue
@@ -273,9 +365,10 @@ private func readLocalTags(from url: URL) -> LocalProbeResult {
         title: title,
         artist: artist,
         album: album,
+        albumArtist: albumArtist,
         year: year,
-        trackNumber: parsePairFirstInt(trackString),  // was: trackString:
-        discNumber: parsePairFirstInt(discString),    // was: discString:
+        trackNumber: parsePairFirstInt(trackString),
+        discNumber: parsePairFirstInt(discString),
         durationSec: duration
     )
 }
@@ -363,10 +456,15 @@ private struct DeezerAlbum: Decodable { let title: String? }
 
 // MARK: - MB / DZ calls
 
+/// Constructs a MusicBrainz Lucene query:
+///   recording:"<title>"^3 AND artist:"<artist>"^2 [AND dur:range]
+/// Duration range = ±5 seconds (in milliseconds), if duration is known.
+/// We boost `recording` 3× and `artist` 2× to bias towards exact title matches.
 private func buildMBQuery(artist: String, title: String, duration: Double?) -> String {
     let a = artist.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
     let t = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
     var q = "recording:\"\(t)\"^3 AND artist:\"\(a)\"^2"
+    // If we know the duration, narrow the search window to ±5s to reduce false positives.
     if let d = duration, d > 0 {
         let ms = Int(d * 1000)
         let lo = max(ms - 5000, 0)
@@ -376,6 +474,11 @@ private func buildMBQuery(artist: String, title: String, duration: Double?) -> S
     return q
 }
 
+/// Executes the MB recording search (polite, cached):
+/// - Respects global rate limit (≥1 req/sec)
+/// - Adds User-Agent and Accept headers
+/// - Caches responses in-memory by full URL
+/// - Returns up to 5 candidates including `releases` for album inference
 private func searchMusicBrainz(artist: String, title: String, duration: Double?) async -> [MBRecording] {
     let q = buildMBQuery(artist: artist, title: title, duration: duration)
     let urlStr = "\(EnricherConfig.musicBrainzBase)/recording/?query=\(q)&fmt=json&limit=5&inc=releases"
@@ -390,6 +493,9 @@ private func searchMusicBrainz(artist: String, title: String, duration: Double?)
     }
 }
 
+/// Fetches MB release detail for the chosen release:
+/// - Used to refine `year`, `discNumber`, and `trackNumber`
+/// - We search the medium/tracks for a normalized-title match to compute trackNumber
 private func fetchMBReleaseDetail(releaseID: String) async -> MBReleaseDetail? {
     let urlStr = "\(EnricherConfig.musicBrainzBase)/release/\(releaseID)?fmt=json&inc=recordings+artist-credits+labels"
     guard let url = URL(string: urlStr) else { return nil }
@@ -402,6 +508,10 @@ private func fetchMBReleaseDetail(releaseID: String) async -> MBReleaseDetail? {
     }
 }
 
+/// Fetches cover art JPEG bytes from Cover Art Archive:
+/// - First try the specific `release` front-250
+/// - Fallback to the broader `release-group` front-250
+/// - Cached by release / release-group id
 private func fetchArtworkData(releaseID: String?, releaseGroupID: String?) async -> Data? {
     // Try release first (more specific), then release-group
     if let rid = releaseID, let url = URL(string: "\(EnricherConfig.coverArtBase)/release/\(rid)/front-250") {
@@ -417,6 +527,10 @@ private func fetchArtworkData(releaseID: String?, releaseGroupID: String?) async
     return nil
 }
 
+/// Queries Deezer as a weak-signal fallback:
+/// - GET /search?q=track:"title" artist:"artist"
+/// - Used to fill missing album/duration/link only
+/// - Artist is only replaced if current artist is placeholder or equals album
 private func searchDeezer(artist: String, title: String) async -> DeezerTrack? {
     let t = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
     let a = artist.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
@@ -434,15 +548,9 @@ private func searchDeezer(artist: String, title: String) async -> DeezerTrack? {
 
 // MARK: - Scoring & merging
 
-private func similarity(_ a: String, _ b: String) -> Double {
-    let na = a.lowercased().filter(\.isLetter)
-    let nb = b.lowercased().filter(\.isLetter)
-    if na.isEmpty || nb.isEmpty { return 0 }
-    if na == nb { return 1 }
-    let minLen = min(na.count, nb.count)
-    let prefixEq = zip(na, nb).prefix { $0 == $1 }.count
-    return max(Double(prefixEq) / Double(minLen), 0.0)
-}
+// MARK: - Local tag reading
+
+// MARK: - Scoring & merge helpers
 
 private func candidateScore(file: Song, mb: MBRecording, folderArtist: String?, folderAlbum: String?) -> Double {
     var s = 0.0
@@ -457,11 +565,26 @@ private func candidateScore(file: Song, mb: MBRecording, folderArtist: String?, 
     return min(s, 1.0)
 }
 
-private func coalesce(_ new: String?, _ old: String) -> String {
-    let n = (new ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    return n.isEmpty ? old : n
+/// Joins MusicBrainz artist credits into a display string ("A, B, C") for the track.
+private func mbArtistString(from credits: [MBArtistCredit]) -> String {
+    if credits.isEmpty { return "" }
+    return credits.map { $0.name }.joined(separator: ", ")
 }
-private func coalesceInt(_ new: Int?, _ old: Int) -> Int { (new ?? 0) != 0 ? (new ?? 0) : old }
+
+/// Decides whether to overwrite the current artist with a new candidate:
+/// - Always reject empty candidates
+/// - Replace if current is a placeholder or equals the album name (common bad tag)
+/// - Replace if MB confidence ≥ 0.80 AND names are sufficiently different (similarity < 0.40)
+private func shouldReplaceArtist(old: String, with new: String, album: String, confidence: Double) -> Bool {
+    let oldTrim = old.trimmingCharacters(in: .whitespacesAndNewlines)
+    let newTrim = new.trimmingCharacters(in: .whitespacesAndNewlines)
+    if newTrim.isEmpty { return false }
+    // Replace if the current artist is clearly a placeholder or equals the album (common bad tag)
+    if isPlaceholder(oldTrim) || (!album.isEmpty && oldTrim.caseInsensitiveCompare(album) == .orderedSame) { return true }
+    // If MB is confident and names are quite different, prefer MB.
+    if confidence >= 0.80 && similarity(oldTrim, newTrim) < 0.40 { return true }
+    return false
+}
 
 // MARK: - Public API
 
@@ -471,36 +594,55 @@ final class MetadataEnricher {
     static func enrich(_ song: Song) async throws -> Song {
         var working = song
 
-        // 0) Local tags first (works offline; FLAC Vorbis handled)
+        // STEP 1 — LOCAL TAGS
+        // Read everything we can from the file first (works offline, fastest).
+        // Also capture albumArtist for the common "Artist == Album" bad-tag case.
         let local = readLocalTags(from: song.url)
-        working.title       = coalesce(local.title, working.title)
-        working.artist      = coalesce(local.artist, working.artist)
-        working.album       = coalesce(local.album, working.album)
-        working.year        = coalesce(local.year, working.year)
+        working.title       = coalesceSmart(local.title, working.title)
+        working.artist      = coalesceSmart(local.artist, working.artist)
+        working.album       = coalesceSmart(local.album, working.album)
+        working.year        = coalesceSmart(local.year, working.year)
         working.trackNumber = coalesceInt(local.trackNumber, working.trackNumber)
         working.discNumber  = coalesceInt(local.discNumber, working.discNumber)
         if working.duration == 0, let d = local.durationSec { working.duration = d }
 
-        // 1) Folder hints (only fill gaps)
-        let hints = folderHints(from: song.url)
-        if working.artist.trimmingCharacters(in: .whitespaces).isEmpty, let ha = hints.artist { working.artist = ha }
-        if working.album.trimmingCharacters(in: .whitespaces).isEmpty,  let hb = hints.album  { working.album  = hb }
+        // STEP 1a — Album Artist fallback
+        // If artist is missing/placeholder OR equals album, prefer the albumArtist (Band/TPE2).
+        if (isPlaceholder(working.artist) || (!working.album.isEmpty && working.artist.caseInsensitiveCompare(working.album) == .orderedSame)),
+           let aa = local.albumArtist, !aa.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            working.artist = aa
+        }
 
-        // 2) Filename parsing if still weak
+        // STEP 2 — FOLDER HINTS
+        // Infer Artist/Album from the parent folders (only if fields are empty/placeholder).
+        let hints = folderHints(from: song.url)
+        if isPlaceholder(working.artist), let ha = hints.artist { working.artist = ha }
+        if isPlaceholder(working.album),  let hb = hints.album  { working.album  = hb }
+
+        // STEP 2b — FILENAME PARSING
+        // Parse "Artist - Title" (and variations). Use only to fill missing/placeholder fields.
         let nameNoExt = song.url.deletingPathExtension().lastPathComponent
         let parsed = splitArtistTitle(nameNoExt, fallbackArtist: working.artist.isEmpty ? nil : working.artist)
         if working.title.trimmingCharacters(in: .whitespaces).isEmpty { working.title = parsed.title }
-        if working.artist.trimmingCharacters(in: .whitespaces).isEmpty, let a = parsed.artist { working.artist = a }
+        // If artist is empty OR (bad tag where artist == album), prefer filename-parsed artist when present
+        if (working.artist.trimmingCharacters(in: .whitespaces).isEmpty || working.artist.caseInsensitiveCompare(working.album) == .orderedSame),
+           let a = parsed.artist, !a.trimmingCharacters(in: .whitespaces).isEmpty {
+            working.artist = a
+        }
 
         log.debug("Cleaned → title='\(working.title, privacy: .public)' artist='\(working.artist, privacy: .public)' album='\(working.album, privacy: .public)'")
 
-        // Early exit: solid tags already present (title+artist+album+duration)
-        if !working.title.isEmpty, !working.artist.isEmpty, !working.album.isEmpty, working.duration > 0 {
+        // EARLY EXIT — If we now have good title/artist/album/duration, persist and return.
+        if !isPlaceholder(working.title),
+           !isPlaceholder(working.artist),
+           !isPlaceholder(working.album),
+           working.duration > 0 {
             saveSidecar(for: working, confidence: 1.0, queryUsed: "local")
             return working
         }
 
-        // 3) MusicBrainz – fetch up to 5, score, accept only if confident
+        // STEP 3 — MUSICBRAINZ (using current artist/title)
+        // Build weighted query; fetch up to 5 candidates; score them; accept only if ≥ threshold.
         var releaseID: String?
         var releaseGroupID: String?
         var confidenceUsed: Double = 0.0
@@ -515,17 +657,20 @@ final class MetadataEnricher {
                     queryUsed = "musicbrainz"
                     if best.score >= EnricherConfig.confidenceThreshold {
                         let rec = best.cand
-                        working.title = coalesce(rec.title, working.title)
-                        if let ac = rec.artistCredit.first?.name { working.artist = coalesce(ac, working.artist) }
+                        working.title = coalesceSmart(rec.title, working.title)
+                        let mbArtist = mbArtistString(from: rec.artistCredit)
+                        if shouldReplaceArtist(old: working.artist, with: mbArtist, album: working.album, confidence: best.score) {
+                            working.artist = mbArtist
+                        }
                         if let rel = rec.releases?.first {
-                            working.album = coalesce(rel.title, working.album)
+                            working.album = coalesceSmart(rel.title, working.album)
                             releaseID = rel.id
                             releaseGroupID = rel.releaseGroup?.id
                             working.musicBrainzReleaseID = rel.id
                         }
-                        // Year / Track / Disc via release detail
+                        // STEP 3a — REFINE WITH RELEASE DETAIL (year/disc/track)
                         if let rid = releaseID, let detail = await fetchMBReleaseDetail(releaseID: rid) {
-                            if let date = detail.date, !date.isEmpty { working.year = coalesce(String(date.prefix(4)), working.year) }
+                            if let date = detail.date, !date.isEmpty { working.year = coalesceSmart(String(date.prefix(4)), working.year) }
                             if let medium = detail.media?.first {
                                 working.discNumber = coalesceInt(medium.position, working.discNumber)
                                 if let tracks = medium.tracks {
@@ -543,7 +688,7 @@ final class MetadataEnricher {
                                 }
                             }
                         }
-                        // Cover art (release → release-group)
+                        // STEP 4 — COVER ART (Release → Release-Group)
                         if working.artwork == nil {
                             if let art = await fetchArtworkData(releaseID: releaseID, releaseGroupID: releaseGroupID) {
                                 working.artwork = art
@@ -558,24 +703,63 @@ final class MetadataEnricher {
             }
         }
 
-        // 4) Deezer fallback for album/duration/link (only fill gaps)
+        // STEP 3b — FALLBACK MB QUERY (Filename-derived artist/title)
+        // Helps when local tags are wrong but the filename is correct.
+        if confidenceUsed < EnricherConfig.confidenceThreshold {
+            if let parsedArtist = parsed.artist, !parsedArtist.isEmpty {
+                let cands2 = await searchMusicBrainz(artist: parsedArtist, title: parsed.title, duration: working.duration)
+                if !cands2.isEmpty {
+                    let scored2 = cands2.map { (cand: $0, score: candidateScore(file: working, mb: $0,
+                                                                              folderArtist: hints.artist,
+                                                                              folderAlbum: hints.album)) }
+                    if let best2 = scored2.max(by: { $0.score < $1.score }),
+                       best2.score >= EnricherConfig.confidenceThreshold {
+                        let rec2 = best2.cand
+                        confidenceUsed = best2.score
+                        queryUsed = queryUsed == "none" ? "musicbrainz(filename)" : "\(queryUsed)+filename"
+                        working.title = coalesceSmart(rec2.title, working.title)
+                        let mbArtist2 = mbArtistString(from: rec2.artistCredit)
+                        if shouldReplaceArtist(old: working.artist, with: mbArtist2, album: working.album, confidence: best2.score) {
+                            working.artist = mbArtist2
+                        }
+                        if let rel2 = rec2.releases?.first {
+                            working.album = coalesceSmart(rel2.title, working.album)
+                            releaseID = rel2.id
+                            releaseGroupID = rel2.releaseGroup?.id
+                            working.musicBrainzReleaseID = rel2.id
+                        }
+                    }
+                }
+            }
+        }
+
+        // STEP 5 — DEEZER FALLBACK (fill album/duration/link only)
         if (working.album.isEmpty || working.duration == 0),
            !working.title.isEmpty, !working.artist.isEmpty,
            let dz = await searchDeezer(artist: working.artist, title: working.title) {
             queryUsed = (confidenceUsed > 0 ? queryUsed + "+deezer" : "deezer")
-            working.title  = coalesce(dz.title, working.title)
-            if let an = dz.artist?.name { working.artist = coalesce(an, working.artist) }
-            if let alb = dz.album?.title { working.album = coalesce(alb, working.album) }
+            working.title  = coalesceSmart(dz.title, working.title)
+            if let an = dz.artist?.name {
+                // Deezer is a weaker signal; only replace if artist is placeholder or equals album
+                if isPlaceholder(working.artist) || working.artist.caseInsensitiveCompare(working.album) == .orderedSame {
+                    working.artist = an
+                }
+            }
+            if let alb = dz.album?.title { working.album = coalesceSmart(alb, working.album) }
             if let dur = dz.duration, working.duration == 0 { working.duration = Double(dur) }
             if let link = dz.link { working.externalURL = link }
         }
 
-        // 5) Save sidecar (include confidence + query used)
+        // STEP 6 — WRITE SIDECAR (diagnostics & provenance)
+        // We persist source + confidence + core tags next to the audio for later debugging.
         saveSidecar(for: working, confidence: max(confidenceUsed, working.title.isEmpty ? 0 : 0.6), queryUsed: queryUsed)
         return working
     }
 
     // MARK: - Sidecar save (JSON next to file)
+    /// Persists a JSON sidecar in `.metadata/` next to the audio file including:
+    ///   source (which queries were used), rounded confidence, core tags, MBID, externalURL.
+    /// This makes later debugging and incremental rescans deterministic and observable.
     private static func saveSidecar(for song: Song, confidence: Double, queryUsed: String) {
         let meta: [String: Any] = [
             "source": queryUsed.isEmpty ? "local" : queryUsed,
@@ -608,7 +792,6 @@ final class MetadataEnricher {
 // MARK: - Compatibility shim (keeps older call sites compiling)
 
 extension MetadataEnricher {
-    /// Back-compat for older code that called `fetchArtwork(for:)`
     static func fetchArtwork(for song: Song) async throws -> Data? {
         await fetchArtworkData(releaseID: song.musicBrainzReleaseID, releaseGroupID: nil)
     }
