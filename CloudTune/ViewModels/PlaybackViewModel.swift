@@ -356,7 +356,28 @@ class PlaybackViewModel: NSObject, ObservableObject {
     }
 
     func skipBackward() {
+        // If we're more than a couple seconds into the song, just restart it.
+        // This mirrors common player behavior and avoids stopping the engine.
+        if currentTime > 3 {
+            seek(to: 0)
+            if !isPlaying {
+                audio.resume()
+                isPlaying = true
+                updateNowPlayingPlaybackState()
+            }
+            return
+        }
+
+        // Otherwise, move to the previous item in the active queue (or wrap).
+        // Stop current playback only when we're actually switching tracks.
         stop(clearSong: false)
+
+        if repeatMode == .repeatOne {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.play(song: self.songQueue[self.currentIndex], in: self.originalQueue, contextName: self.currentContextName)
+            }
+            return
+        }
 
         let prevIndex = currentIndex - 1
         if songQueue.indices.contains(prevIndex) {
@@ -369,26 +390,37 @@ class PlaybackViewModel: NSObject, ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 self.play(song: self.songQueue[self.currentIndex], in: self.originalQueue, contextName: self.currentContextName)
             }
+        } else {
+            // At the start of the queue with no wrapping: just restart current song.
+            if let cur = currentSong {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self.play(song: cur, in: self.originalQueue, contextName: self.currentContextName)
+                }
+            }
         }
     }
 
     func toggleShuffle() {
+        let wasOn = isShuffle
         isShuffle.toggle()
+
+        guard let current = currentSong else {
+            // No current song; just (re)build from the head as needed.
+            if isShuffle {
+                shuffledQueue = originalQueue.shuffled()
+            }
+            return
+        }
+
         if isShuffle {
-            shuffledQueue = originalQueue
-            // Fisher-Yates shuffle (keep current song at index 0)
-            for i in stride(from: shuffledQueue.count - 1, through: 1, by: -1) {
-                let j = Int.random(in: 0...i)
-                shuffledQueue.swapAt(i, j)
-            }
-            if let current = currentSong, let idx = shuffledQueue.firstIndex(of: current) {
-                shuffledQueue.swapAt(0, idx)
-                currentIndex = 0
-            }
+            // Turning ON: keep current song first, shuffle the rest AFTER it.
+            var rest = originalQueue.filter { $0 != current }
+            rest.shuffle()
+            shuffledQueue = [current] + rest
+            currentIndex = 0
         } else {
-            if let current = currentSong {
-                currentIndex = originalQueue.firstIndex(of: current) ?? 0
-            }
+            // Turning OFF: map back to original index of the current song.
+            currentIndex = originalQueue.firstIndex(of: current) ?? 0
         }
     }
 
@@ -479,6 +511,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     self.currentTime = clamped
                     self.updateNowPlayingElapsedTimeThrottled()
+                    self.updateNowPlayingPlaybackState()
                 }
             }
         }
