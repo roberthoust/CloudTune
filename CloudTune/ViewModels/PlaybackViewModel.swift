@@ -140,21 +140,28 @@ class PlaybackViewModel: NSObject, ObservableObject {
         let incoming = queue.isEmpty ? [song] : queue
         let reorderedQueue = incoming
 
-        // 2) Rebuild indices
-        if reorderedQueue != originalQueue {
-            if let idx = reorderedQueue.firstIndex(of: song) {
-                currentIndex = idx
+        // 2) Rebuild indices / queues with correct shuffle semantics:
+        //    - If shuffle is ON: the tapped song should play NOW, and the remainder should be shuffled *after* it.
+        //    - If shuffle is OFF: preserve the incoming order and set index to the tapped song.
+        originalQueue = reorderedQueue
+        if isShuffle {
+            // Build shuffled queue with the selected song first, others randomized after it.
+            var rest = reorderedQueue
+            if let sel = rest.firstIndex(of: song) {
+                let selected = rest.remove(at: sel)
+                shuffledQueue = [selected] + rest.shuffled()
             } else {
-                currentIndex = 0
+                // Fallback: shuffle everything, then ensure selected (if present) is front.
+                shuffledQueue = reorderedQueue.shuffled()
+                if let idx = shuffledQueue.firstIndex(of: song) {
+                    shuffledQueue.swapAt(0, idx)
+                }
             }
-            originalQueue = reorderedQueue
-            shuffledQueue = reorderedQueue.shuffled()
+            currentIndex = 0 // the selected song is at the front
         } else {
-            if let idx = songQueue.firstIndex(of: song) {
-                currentIndex = idx
-            } else {
-                currentIndex = 0
-            }
+            // No shuffle — honor the provided order exactly.
+            currentIndex = reorderedQueue.firstIndex(of: song) ?? 0
+            shuffledQueue = [] // not used when shuffle is off
         }
 
         currentSong = songQueue[currentIndex]

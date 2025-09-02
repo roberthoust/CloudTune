@@ -5,106 +5,80 @@ struct MiniPlayerView: View {
 
     var body: some View {
         if let song = playbackVM.currentSong {
-            VStack {
-                ZStack(alignment: .center) {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(Color.appAccent.opacity(0.5), lineWidth: 0.75)
-                        )
-                        .shadow(color: .black.opacity(0.05), radius: 6, x: 0, y: 2)
-
-                    HStack(spacing: 14) {
-                        // Artwork thumbnail
-                        if let data = song.artwork, let image = UIImage(data: data) {
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 44, height: 44)
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color.appAccent.opacity(0.7), lineWidth: 1)
-                                )
-                        } else {
-                            Image("DefaultCover")
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 44, height: 44)
-                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color.appAccent.opacity(0.7), lineWidth: 1)
-                                )
-                        }
-
-                        // Song info
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(song.title)
-                                .font(.callout)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.leading)
-
-                            Text(song.artist)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                        }
-
-                        Spacer()
-
-                        // Controls
-                        HStack(spacing: 20) {
-                            Button(action: {
-                                playbackVM.skipBackward()
-                            }) {
-                                Image(systemName: "backward.fill")
-                                    .font(.title2)
-                            }
-
-                            Button(action: {
-                                playbackVM.togglePlayPause()
-                            }) {
-                                Image(systemName: playbackVM.isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.title2)
-                            }
-
-                            Button(action: {
-                                playbackVM.skipForward()
-                            }) {
-                                Image(systemName: "forward.fill")
-                                    .font(.title2)
-                            }
-                        }
-                        .foregroundColor(.appAccent)
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 6)
+            HStack(spacing: 14) {
+                // Artwork thumbnail
+                if let data = song.artwork, let image = UIImage(data: data) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 46, height: 46)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                } else {
+                    Image("DefaultCover")
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 46, height: 46)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
-                .frame(height: 64)
-                .padding(.horizontal)
-                .onTapGesture {
-                    withAnimation {
-                        playbackVM.showPlayer = true
+
+                // Song info
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(song.title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Text(song.artist)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+
+                Spacer()
+
+                // Controls
+                HStack(spacing: 28) {
+                    Button {
+                        playbackVM.skipBackward()
+                    } label: {
+                        Image(systemName: "backward.fill")
+                            .font(.title3)
+                    }
+
+                    Button {
+                        playbackVM.togglePlayPause()
+                    } label: {
+                        Image(systemName: playbackVM.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.title3)
+                            .scaleEffect(playbackVM.isPlaying ? 1.05 : 1.0)
+                            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: playbackVM.isPlaying)
+                    }
+
+                    Button {
+                        playbackVM.skipForward()
+                    } label: {
+                        Image(systemName: "forward.fill")
+                            .font(.title3)
                     }
                 }
-                .transition(.move(edge: .bottom))
+                .foregroundColor(.appAccent)
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.appAccent.opacity(0.3), lineWidth: 0.5)
+            )
+            .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
+            .padding(.horizontal)
+            .onTapGesture {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                    playbackVM.showPlayer = true
+                }
+            }
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
-    }
-}
-
-struct RoundedCorner: Shape {
-    var radius: CGFloat = .infinity
-    var corners: UIRectCorner = .allCorners
-
-    func path(in rect: CGRect) -> Path {
-        let path = UIBezierPath(
-            roundedRect: rect,
-            byRoundingCorners: corners,
-            cornerRadii: CGSize(width: radius, height: radius)
-        )
-        return Path(path.cgPath)
     }
 }

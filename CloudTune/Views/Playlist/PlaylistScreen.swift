@@ -146,6 +146,9 @@ struct PlaylistScreen: View {
                     .padding(.horizontal)
                     .transition(.opacity.combined(with: .scale))
                     .animation(.easeInOut(duration: 0.3), value: viewMode)
+
+                    // Extra scrollable space so MiniPlayer doesn't cover last rows
+                    Spacer(minLength: 100)
                 }
             } else {
                 // List mode — no outer ScrollView to avoid nested scrolling
@@ -159,6 +162,7 @@ struct PlaylistScreen: View {
                 }
             }
         }
+            
         .navigationTitle("Playlists")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {

@@ -259,20 +259,27 @@ struct EQSettingsView: View {
                                 Button("Save") {
                                     let name = newPresetName.trimmingCharacters(in: .whitespacesAndNewlines)
                                     guard !name.isEmpty, gains.count == frequencies.count else { return }
+
+                                    // Optimistic UI update: show new preset immediately
+                                    withAnimation(.easeOut(duration: 0.15)) {
+                                        selectedPresetName = name
+                                        selectedPresetGainsCache = gains
+                                        if !cachedCustomPresets.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                                            cachedCustomPresets.append(name)
+                                            cachedCustomPresets.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+                                        }
+                                        showSaveDialog = false
+                                    }
+
                                     isSaving = true
+                                    // Persist in the background
                                     Task {
                                         await Task.detached(priority: .utility) {
                                             EQManager.shared.savePreset(name: name, gains: gains)
                                             EQManager.shared.saveLastUsed(gains: gains, presetName: name)
                                         }.value
                                         await MainActor.run {
-                                            withAnimation(nil) {
-                                                selectedPresetName = name
-                                                selectedPresetGainsCache = gains
-                                                refreshCustomNames()
-                                                isSaving = false
-                                                showSaveDialog = false
-                                            }
+                                            withAnimation(nil) { isSaving = false }
                                         }
                                     }
                                 }
@@ -320,13 +327,21 @@ struct EQSettingsView: View {
                    actions: {
                        Button("Delete", role: .destructive) {
                            if let p = presetToDelete {
-                               EQManager.shared.deleteCustomPreset(named: p)
-                               refreshCustomNames()
+                               // Optimistic UI update
+                               withAnimation(.easeOut(duration: 0.15)) {
+                                   cachedCustomPresets.removeAll { $0 == p }
+                               }
+                               // If we just deleted the active preset, fall back immediately
                                if selectedPresetName == p {
                                    applyPreset(named: "Flat")
                                    selectedPresetGainsCache = builtInPresets["Flat"]
                                }
                                presetToDelete = nil
+
+                               // Persist in the background
+                               Task.detached(priority: .utility) {
+                                   EQManager.shared.deleteCustomPreset(named: p)
+                               }
                            }
                        }
                        Button("Cancel", role: .cancel) { presetToDelete = nil }
@@ -402,4 +417,4 @@ struct EQSettingsView: View {
         }
         return true
     }
-}   
+}

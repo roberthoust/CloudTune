@@ -141,6 +141,8 @@ struct AlbumsView: View {
                     .transition(.opacity)
                     .animation(.easeInOut(duration: 0.3), value: isGridView)
                 }
+
+                Spacer(minLength: 100) // extra scroll space so MiniPlayer doesn't overlap last albums
             }
             .padding(.top, 6)
             .onAppear { rebuildGroupedAlbums() }
