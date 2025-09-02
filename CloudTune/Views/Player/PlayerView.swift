@@ -24,6 +24,8 @@ private struct ArtworkView: View, Equatable {
     let hasArtwork: Bool
 
     @State private var image: UIImage?
+    @State private var previousImage: UIImage?
+    @State private var previousOpacity: Double = 0.0
     @State private var imageOpacity: Double = 0.0
     @State private var pendingKey: String?
     @State private var decodeToken = UUID()
@@ -38,16 +40,22 @@ private struct ArtworkView: View, Equatable {
                 )
                 .frame(width: side + 20, height: side + 20)
 
-            Group {
+            ZStack {
+                if let previousImage {
+                    Image(uiImage: previousImage)
+                        .resizable()
+                        .scaledToFill()
+                        .opacity(previousOpacity)
+                }
                 if let image {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
                         .opacity(imageOpacity)
-                        .transition(.opacity)
                 }
             }
             .frame(width: side, height: side)
+            .clipped()
             .clipShape(RoundedRectangle(cornerRadius: 20))
         }
         .onAppear(perform: decodeIfNeeded)
@@ -71,12 +79,12 @@ private struct ArtworkView: View, Equatable {
             pendingKey = keyForThisDecode
             // Only apply if we're still decoding for the same song
             guard tokenForThisDecode == decodeToken else { return }
-            setImageWithFade(cached)
+            setImageWithCrossfade(cached)
             return
         }
         // 2) No artwork? show default and bail.
         guard let artworkData, hasArtwork else {
-            setImageWithFade(nil)
+            setImageWithCrossfade(nil)
             return
         }
         // 3) Decode off-main, generate a sized thumbnail, then cache.
@@ -99,23 +107,40 @@ private struct ArtworkView: View, Equatable {
                     forKey: cacheKey,
                     cost: (thumb.cgImage?.bytesPerRow ?? 0) * (thumb.cgImage?.height ?? 0)
                 )
-                setImageWithFade(thumb)
+                setImageWithCrossfade(thumb)
             }
         }
     }
 
-    private func setImageWithFade(_ newImage: UIImage?) {
-        // If nothing changed, skip animations
+    private func setImageWithCrossfade(_ newImage: UIImage?) {
+        // If bytes are identical, keep as-is (no animation)
         if let current = image, let next = newImage, current.pngData() == next.pngData() {
-            imageOpacity = 1.0
+            previousImage = nil
+            previousOpacity = 0.0
             image = next
+            imageOpacity = 1.0
             return
         }
+
+        // Prepare crossfade: current becomes 'previous', new becomes 'image'
+        previousImage = image
+        previousOpacity = (previousImage == nil) ? 0.0 : 1.0
+
         image = newImage
-        // Start from transparent and fade in
-        imageOpacity = 0.0
+        imageOpacity = (newImage == nil) ? 0.0 : 0.0
+
+        // Animate both layers for a smooth transition
         withAnimation(.easeInOut(duration: 0.25)) {
-            imageOpacity = 1.0
+            previousOpacity = 0.0
+            if newImage != nil { imageOpacity = 1.0 }
+        }
+
+        // Cleanup previous image after the animation completes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.26) {
+            // Only clear if we haven't started another transition
+            if previousOpacity == 0.0 {
+                previousImage = nil
+            }
         }
     }
 }

@@ -76,7 +76,7 @@ actor SongMetadataManager {
             year: song.year.isEmpty ? nil : song.year,
             trackNumber: song.trackNumber == 0 ? nil : song.trackNumber,
             discNumber: song.discNumber == 0 ? nil : song.discNumber,
-            artwork: song.artwork
+            artwork: song.artwork                   
         )
 
         await updateMetadata(for: song.id, with: enriched)

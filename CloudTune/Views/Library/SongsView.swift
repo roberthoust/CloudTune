@@ -142,7 +142,7 @@ struct SongRow: View {
             if isPlaying {
                 Image(systemName: "waveform.circle.fill")
                     .foregroundColor(.appAccent)
-                    .imageScale(.large)
+                    .imageScale(. large)
                     .transition(.opacity)
             }
         }
