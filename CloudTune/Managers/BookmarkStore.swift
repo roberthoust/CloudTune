@@ -48,18 +48,18 @@ final class BookmarkStore {
     /// Persist a security-scoped bookmark for the given folder URL.
     func saveBookmark(forFolder folderURL: URL) {
         do {
-            let options: URL.BookmarkCreationOptions = {
-                if #available(iOS 13.0, *) { return [.minimalBookmark] }
-                else { return [] }
-            }()
-
             let key = Self.normalizePath(folderURL.path)
-            let data = try folderURL.bookmarkData(options: options,
-                                                  includingResourceValuesForKeys: nil,
-                                                  relativeTo: nil)
+
+            // Create a SECURITY-SCOPED bookmark via NSURL (Swift URL overlay can be finicky)
+            let data = try (folderURL as NSURL).bookmarkData(
+                options: [],                                  // ← no .withSecurityScope on iOS
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+
             bookmarks[key] = data
             UserDefaults.standard.set(bookmarks, forKey: storageKey)
-            print("🔖 Saved bookmark for folder: \(folderURL.lastPathComponent)")
+            print("🔖 Saved SECURITY-SCOPED bookmark for: \(folderURL.lastPathComponent)")
         } catch {
             print("❌ Failed to create bookmark for \(folderURL.path): \(error)")
         }
@@ -81,19 +81,28 @@ final class BookmarkStore {
     private func resolveFolderURL(fromStoredPath path: String) -> URL? {
         let key = Self.normalizePath(path)
         guard let data = bookmarks[key] else { return nil }
-        var stale = false
+        var stale: ObjCBool = false
         do {
-            let url = try URL(resolvingBookmarkData: data,
-                              options: [],
-                              relativeTo: nil,
-                              bookmarkDataIsStale: &stale)
-            if stale {
-                let refreshed = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            // Resolve using NSURL (no .withSecurityScope on iOS)
+            let resolved = try NSURL(
+                resolvingBookmarkData: data,
+                options: [],
+                relativeTo: nil,
+                bookmarkDataIsStale: &stale
+            ) as URL
+
+            if stale.boolValue {
+                // Recreate a fresh bookmark and persist it (no .withSecurityScope on iOS)
+                let refreshed = try (resolved as NSURL).bookmarkData(
+                    options: [],
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
                 bookmarks[key] = refreshed
                 UserDefaults.standard.set(bookmarks, forKey: storageKey)
                 print("♻️ Refreshed stale bookmark for: \(key)")
             }
-            return url
+            return resolved
         } catch {
             print("❌ Failed resolving bookmark for \(key): \(error)")
             return nil

@@ -16,38 +16,51 @@ enum RepeatMode {
 class PlaybackViewModel: NSObject, ObservableObject {
     // 🔁 Engine that owns the player/graph.
     private let audio = AudioEngine.shared
-
+    
     @Published var currentSong: Song?
     @Published var isPlaying: Bool = false
     @Published var showPlayer: Bool = false
     @Published var currentTime: Double = 0
     @Published var duration: Double = 0
     @Published var shouldShowPlayer: Bool = false
-
+    
     @Published var isShuffle: Bool = false
     @Published var repeatMode: RepeatMode = .off
     @Published var currentContextName: String?
-
+    
     @Published var originalQueue: [Song] = []
     private var shuffledQueue: [Song] = []
     @Published var currentIndex: Int = -1
-
+    
     @Published var songToAddToPlaylist: Song?
     @Published var showAddToPlaylistSheet: Bool = false
-
+    
     private var timer: Timer?
     private var playbackStartTime: TimeInterval = 0
-
+    
     // Track the currently active play() to filter stale completions
     private var playToken = UUID()
-
+    
     // Track user seeks so we can ignore immediate "completion" callbacks that some engines emit
     private var lastSeekAt: TimeInterval = 0
     private let seekIgnoreWindow: TimeInterval = 1.0 // seconds
-
+    
+    // Now Playing dedup/throttle
+    private struct NowPlayingSignature: Equatable {
+        let title: String
+        let artist: String
+        let duration: Double
+        let elapsed: Double
+        let rate: Double
+        let artworkHash: Int
+    }
+    private var lastNPSignature: NowPlayingSignature?
+    private var lastNPStateElapsed: Double = -1
+    private var lastNPStateRate: Double = -1
+    
     // Keeps a security-scope open for the currently playing song's folder.
     private var stopSecurityScope: (() -> Void)?
-
+    
     /// Returns true only for URLs that live *outside* our app sandbox and may need security scope.
     private func requiresSecurityScope(for url: URL) -> Bool {
         let fm = FileManager.default
@@ -55,36 +68,32 @@ class PlaybackViewModel: NSObject, ObservableObject {
         let lib  = fm.urls(for: .libraryDirectory,  in: .userDomainMask).first!.standardizedFileURL.path
         let tmp  = URL(fileURLWithPath: NSTemporaryDirectory()).standardizedFileURL.path
         let path = url.standardizedFileURL.resolvingSymlinksInPath().path
-
+        
         // Only consider *your* app-group safe IF you actually have the entitlement.
         var myGroupPath: String? = nil
         if let groupID = Bundle.main.object(forInfoDictionaryKey: "AppGroupIdentifier") as? String,
            let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID) {
             myGroupPath = container.standardizedFileURL.path
         }
-
+        
         // SAFE = inside Documents/Library/tmp or inside *your* entitled app group container
         let inSandbox =
-            path.hasPrefix(docs) ||
-            path.hasPrefix(lib)  ||
-            path.hasPrefix(tmp)  ||
-            (myGroupPath != nil && path.hasPrefix(myGroupPath!))
-
-//        if !inSandbox {
-//            print("🔎 requiresSecurityScope? true — path=\(path)")
-//        }
+        path.hasPrefix(docs) ||
+        path.hasPrefix(lib)  ||
+        path.hasPrefix(tmp)  ||
+        (myGroupPath != nil && path.hasPrefix(myGroupPath!))
         
         return !inSandbox
     }
-
+    
     var songQueue: [Song] { isShuffle ? shuffledQueue : originalQueue }
-
+    
     override init() {
         super.init()
-
+        
         // Let the EQ UI control the engine's EQ node.
         EQManager.shared.attach(eq: audio.eq)
-
+        
         // AudioEngine configures AVAudioSession internally; we just react here.
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
@@ -95,7 +104,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
                   let userInfo = notification.userInfo,
                   let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
-
+            
             switch type {
             case .began:
                 self.audio.pause()
@@ -112,7 +121,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
                 break
             }
         }
-
+        
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: nil,
@@ -120,44 +129,33 @@ class PlaybackViewModel: NSObject, ObservableObject {
         ) { notification in
             print("Audio session route change notification: \(notification)")
         }
-
+        
         setupRemoteCommandCenter()
     }
-
+    
     // MARK: - Playback control
-
+    
     func play(song: Song, in queue: [Song] = [], contextName: String? = nil) {
-        // 0) If a new song (different URL) is chosen, stop current playback cleanly
-        // Close any previous folder security-scope when switching songs.
         stopSecurityScope?()
         stopSecurityScope = nil
-
+        
         if currentSong?.url != song.url {
             audio.stop()
         }
-
-        // 1) Use the EXACT order provided by caller (SongsView/Album/Playlist)
+        
         let incoming = queue.isEmpty ? [song] : queue
         let reorderedQueue = incoming
-
-        // 2) Rebuild indices / queues with correct shuffle semantics **without** re-shuffling on every play():
-        //    - If the incoming queue changed, update `originalQueue`.
-        //    - If shuffle is ON and this is a new queue (or first time), build a shuffled list with the
-        //      selected song first and the remaining songs randomized **after** it.
-        //    - If shuffle is ON and the queue is the same, DO NOT reshuffle; just move to the tapped song
-        //      within the existing shuffled order so back/forward remain stable.
+        
         let isSameQueue = (reorderedQueue == originalQueue)
         if !isSameQueue { originalQueue = reorderedQueue }
-
+        
         if isShuffle {
             if !isSameQueue || shuffledQueue.isEmpty {
-                // Build shuffled queue with the selected song first, others randomized after it.
                 var rest = originalQueue
                 if let sel = rest.firstIndex(of: song) {
                     let selected = rest.remove(at: sel)
                     shuffledQueue = [selected] + rest.shuffled()
                 } else {
-                    // Fallback: shuffle everything, then ensure selected (if present) is first.
                     shuffledQueue = originalQueue.shuffled()
                     if let idx = shuffledQueue.firstIndex(of: song) {
                         shuffledQueue.swapAt(0, idx)
@@ -165,18 +163,15 @@ class PlaybackViewModel: NSObject, ObservableObject {
                 }
                 currentIndex = 0
             } else {
-                // Preserve existing shuffled order; jump to the tapped song within it.
                 currentIndex = shuffledQueue.firstIndex(of: song) ?? 0
             }
         } else {
-            // No shuffle — honor the provided order exactly and do not touch `shuffledQueue`.
             currentIndex = originalQueue.firstIndex(of: song) ?? 0
         }
-
+        
         currentSong = songQueue[currentIndex]
         currentContextName = contextName
-
-        // 🔊 DEBUG BANNER
+        
         if let s = currentSong {
             print("""
             🎵 Now Playing
@@ -186,18 +181,13 @@ class PlaybackViewModel: NSObject, ObservableObject {
                Track#: \(s.trackNumber ?? 0)  •  Duration: \(String(format: "%.1f sec", s.duration))
             """)
         }
-
-        // 2.5) ✅ Ensure scope is alive for the folder containing this song.
+        
         if let s = currentSong {
             if requiresSecurityScope(for: s.url) {
                 let parentName = s.url.deletingLastPathComponent().lastPathComponent
-
-                // Prefer an already-kept scope (FolderPicker / SecurityScopeKeeper).
                 if SecurityScopeKeeper.shared.ensureScope(forParentOf: s.url) {
-                    // Existing scope found; DO NOT start another one.
                     print("🔐 Using existing security-scope for: \(parentName)")
                 } else if BookmarkStore.shared.beginAccessIfBookmarked(parentOf: s.url) {
-                    // We started a new scope from a bookmark; fine for this session.
                     print("🔐 Started scope for: \(parentName)")
                     self.stopSecurityScope = { BookmarkStore.shared.endAccess(forFolderContaining: s.url) }
                 } else {
@@ -207,50 +197,34 @@ class PlaybackViewModel: NSObject, ObservableObject {
                 print("🏠 In-app file — security scope not required.")
             }
         }
-
-        // 3) Start playback using AudioEngine
+        
         duration = currentSong?.duration ?? 0
         currentTime = 0
         isPlaying = true
         playbackStartTime = Date().timeIntervalSince1970
-        lastSeekAt = 0 // reset any old seek marker
+        lastSeekAt = 0
         startTimer()
         if let s = currentSong { updateNowPlayingInfo(for: s) }
-
-        // 🔏 New token for this play()
+        
         playToken = UUID()
         let tokenForThisPlay = playToken
-
+        
         audio.play(url: currentSong!.url, id: tokenForThisPlay) { [weak self] in
             guard let self = self else { return }
-
-            // Ignore completions from previous plays
-            guard tokenForThisPlay == self.playToken else {
-                print("⤬ Completion from stale play token — ignored.")
-                return
-            }
-
-            // Ignore completions that fire immediately after a seek
+            guard tokenForThisPlay == self.playToken else { return }
+            
             let now = Date().timeIntervalSince1970
-            if now - self.lastSeekAt < self.seekIgnoreWindow {
-                print("⏸️ Completion ignored — within \(self.seekIgnoreWindow)s of a seek.")
-                return
-            }
-
-            guard self.isPlaying else {
-                print("🛑 Completion ignored — playback already stopped.")
-                return
-            }
-
-            // Use the helper that also ignores ultra-early engine priming completions
+            if now - self.lastSeekAt < self.seekIgnoreWindow { return }
+            guard self.isPlaying else { return }
+            
             self.handlePlaybackCompletion()
         }
-
+        
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
             self.shouldShowPlayer = true
         }
     }
-
+    
     func togglePlayPause() {
         if isPlaying {
             audio.pause()
@@ -262,85 +236,69 @@ class PlaybackViewModel: NSObject, ObservableObject {
         }
         updateNowPlayingPlaybackState()
     }
-
+    
     func stop(clearSong: Bool = true) {
         audio.stop()
-        // Close any active security scope for the current song's folder.
         stopSecurityScope?()
         stopSecurityScope = nil
-
-        // Stop the dispatch timer driving UI updates
+        
         timerSrc?.cancel()
         timerSrc = nil
-
-        // Invalidate token so late completions from the engine are ignored
+        
         playToken = UUID()
-
+        
         timer?.invalidate()
         timer = nil
         isPlaying = false
         currentTime = 0
         duration = 0
-
+        
         if clearSong {
             currentSong = nil
             showPlayer = false
             currentContextName = nil
         }
-
+        
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
-
+    
     func seek(to time: Double) {
         guard currentSong != nil else { return }
-
-        // If the user seeks essentially to the end, just advance now
-        let tailGuard: TimeInterval = 1.2 // seconds reserved so the engine has frames to render
+        
+        let tailGuard: TimeInterval = 1.2
         if duration > 0, time >= duration - tailGuard {
-            print("⏭️ Seeked into tail (<\(tailGuard)s left) — auto-advancing")
             handleSongCompletion()
             return
         }
-
-        // Clamp slightly before the absolute end so scheduleSegment has frames to render
+        
         let clampedTime = max(0, min(time, duration > 0 ? duration - tailGuard : time))
-
-        // Remember if we were playing to keep UI state consistent
         let wasPlaying = isPlaying
-
-        // Mark the moment of user seek so (temporarily) we ignore ultra-early completions
         lastSeekAt = Date().timeIntervalSince1970
-
+        
         audio.seek(to: clampedTime) { [weak self] in
             guard let self = self else { return }
-            // Seek is settled; re-enable normal end-of-track completion so autoplay works
             self.lastSeekAt = 0
-            print("✅ seek(to:) completion handler fired — autoplay re-enabled")
             self.updateNowPlayingElapsedTime()
-            // Ensure Now Playing center stays in sync after the seek finishes
             self.updateNowPlayingPlaybackState()
         }
-
-        // Rebase our local clock/UI
+        
         playbackStartTime = Date().timeIntervalSince1970 - clampedTime
         currentTime = clampedTime
-        if !wasPlaying {
-            isPlaying = true
-        }
+        if !wasPlaying { isPlaying = true }
         startTimer()
         updateNowPlayingPlaybackState()
     }
-
+    
     func skipForward() {
         stop(clearSong: false)
-
+        
         if repeatMode == .repeatOne {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 self.play(song: self.songQueue[self.currentIndex], in: self.originalQueue, contextName: self.currentContextName)
             }
             return
         }
-
+        
         let nextIndex = currentIndex + 1
         if songQueue.indices.contains(nextIndex) {
             currentIndex = nextIndex
@@ -354,10 +312,8 @@ class PlaybackViewModel: NSObject, ObservableObject {
             }
         }
     }
-
+    
     func skipBackward() {
-        // If we're more than a couple seconds into the song, just restart it.
-        // This mirrors common player behavior and avoids stopping the engine.
         if currentTime > 3 {
             seek(to: 0)
             if !isPlaying {
@@ -367,18 +323,16 @@ class PlaybackViewModel: NSObject, ObservableObject {
             }
             return
         }
-
-        // Otherwise, move to the previous item in the active queue (or wrap).
-        // Stop current playback only when we're actually switching tracks.
+        
         stop(clearSong: false)
-
+        
         if repeatMode == .repeatOne {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 self.play(song: self.songQueue[self.currentIndex], in: self.originalQueue, contextName: self.currentContextName)
             }
             return
         }
-
+        
         let prevIndex = currentIndex - 1
         if songQueue.indices.contains(prevIndex) {
             currentIndex = prevIndex
@@ -391,7 +345,6 @@ class PlaybackViewModel: NSObject, ObservableObject {
                 self.play(song: self.songQueue[self.currentIndex], in: self.originalQueue, contextName: self.currentContextName)
             }
         } else {
-            // At the start of the queue with no wrapping: just restart current song.
             if let cur = currentSong {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                     self.play(song: cur, in: self.originalQueue, contextName: self.currentContextName)
@@ -399,104 +352,78 @@ class PlaybackViewModel: NSObject, ObservableObject {
             }
         }
     }
-
+    
     func toggleShuffle() {
-        let wasOn = isShuffle
         isShuffle.toggle()
-
+        
         guard let current = currentSong else {
-            // No current song; just (re)build from the head as needed.
-            if isShuffle {
-                shuffledQueue = originalQueue.shuffled()
-            }
+            if isShuffle { shuffledQueue = originalQueue.shuffled() }
             return
         }
-
+        
         if isShuffle {
-            // Turning ON: keep current song first, shuffle the rest AFTER it.
             var rest = originalQueue.filter { $0 != current }
             rest.shuffle()
             shuffledQueue = [current] + rest
             currentIndex = 0
         } else {
-            // Turning OFF: map back to original index of the current song.
             currentIndex = originalQueue.firstIndex(of: current) ?? 0
         }
     }
-
+    
     func toggleRepeatMode() {
         switch repeatMode {
         case .off:
             repeatMode = .repeatAll
-            print("🔁 Repeat mode set to: Repeat All")
         case .repeatAll:
             repeatMode = .repeatOne
-            print("🔂 Repeat mode set to: Repeat One")
         case .repeatOne:
             repeatMode = .off
-            print("⏹ Repeat mode set to: Off")
         }
     }
-
+    
     // MARK: - Completion handling
-
+    
     private func handlePlaybackCompletion() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            // Ignore ultra-early completions (engine priming etc.)
-            if Date().timeIntervalSince1970 - self.playbackStartTime < 0.5 {
-                print("⏸️ Ignoring ultra-early completion (<0.5s since start).")
-                return
-            }
-            guard self.isPlaying else {
-                print("🛑 Completion ignored — playback already stopped.")
-                return
-            }
+            if Date().timeIntervalSince1970 - self.playbackStartTime < 0.5 { return }
+            guard self.isPlaying else { return }
             self.handleSongCompletion()
         }
     }
-
+    
     private func handleSongCompletion() {
         guard songQueue.indices.contains(currentIndex) else {
-            print("❌ Invalid index, stopping.")
             stop()
             return
         }
-
-        print("🎧 handleSongCompletion() — currentIndex: \(currentIndex)")
-
+        
         switch repeatMode {
         case .repeatOne:
-            print("🔁 Repeating current song.")
             play(song: songQueue[currentIndex], in: originalQueue, contextName: currentContextName)
-
         case .repeatAll:
             if currentIndex + 1 < songQueue.count {
-                print("⏭ Moving to next song.")
                 currentIndex += 1
                 play(song: songQueue[currentIndex], in: originalQueue, contextName: currentContextName)
             } else {
-                print("🔄 Repeating from start.")
                 currentIndex = 0
                 play(song: songQueue[0], in: originalQueue, contextName: currentContextName)
             }
-
         case .off:
             if currentIndex + 1 < songQueue.count {
-                print("⏭ Moving to next song.")
                 currentIndex += 1
                 play(song: songQueue[currentIndex], in: originalQueue, contextName: currentContextName)
             } else {
-                print("⏹ End of queue.")
                 stop()
             }
         }
     }
-
+    
     // MARK: - Now Playing / Timer
-
+    
     private var timerSrc: DispatchSourceTimer?
     private var lastPushedTime: Double = -1
-
+    
     private func startTimer() {
         timerSrc?.cancel()
         let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
@@ -505,7 +432,6 @@ class PlaybackViewModel: NSObject, ObservableObject {
             guard let self = self else { return }
             let elapsed = Date().timeIntervalSince1970 - self.playbackStartTime
             let clamped = min(elapsed, self.duration)
-            // Only push if it moved ≥ 0.25s to avoid UI churn
             if abs(clamped - self.lastPushedTime) >= 0.25 {
                 self.lastPushedTime = clamped
                 DispatchQueue.main.async {
@@ -518,7 +444,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
         timerSrc = t
         t.resume()
     }
-
+    
     private var lastNPUpdate: CFTimeInterval = 0
     private func updateNowPlayingElapsedTimeThrottled() {
         let now = CACurrentMediaTime()
@@ -526,35 +452,54 @@ class PlaybackViewModel: NSObject, ObservableObject {
         lastNPUpdate = now
         MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
     }
-
+    
     private func updateNowPlayingInfo(for song: Song) {
+        let title = song.title
+        let artist = song.artist
+        let dur = duration
+        let elapsed = currentTime
+        let rate = isPlaying ? 1.0 : 0.0
+        let artHash = song.artwork?.hashValue ?? 0
+        
+        let sig = NowPlayingSignature(title: title, artist: artist, duration: dur, elapsed: elapsed, rate: rate, artworkHash: artHash)
+        if sig == lastNPSignature { return }
+        lastNPSignature = sig
+        
         var nowPlayingInfo: [String: Any] = [
-            MPMediaItemPropertyTitle: song.title,
-            MPMediaItemPropertyArtist: song.artist,
-            MPMediaItemPropertyPlaybackDuration: duration,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0
+            MPMediaItemPropertyTitle: title,
+            MPMediaItemPropertyArtist: artist,
+            MPMediaItemPropertyPlaybackDuration: dur,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed,
+            MPNowPlayingInfoPropertyPlaybackRate: rate
         ]
-
+        
         if let data = song.artwork, let image = UIImage(data: data) {
             let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
             nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
         }
-
+        
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }
-
+    
     private func updateNowPlayingPlaybackState() {
+        let rate = isPlaying ? 1.0 : 0.0
+        let elapsed = currentTime
+        if rate == lastNPStateRate && elapsed == lastNPStateElapsed { return }
+        lastNPStateRate = rate
+        lastNPStateElapsed = elapsed
+        
         var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
+        info[MPNowPlayingInfoPropertyPlaybackRate] = rate
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
-
+    
     private func updateNowPlayingElapsedTime() {
+        if currentTime == lastNPStateElapsed { return }
+        lastNPStateElapsed = currentTime
         MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] = currentTime
     }
-
+    
     private func setupRemoteCommandCenter() {
         let center = MPRemoteCommandCenter.shared()
         center.playCommand.addTarget { [weak self] _ in self?.togglePlayPause(); return .success }
