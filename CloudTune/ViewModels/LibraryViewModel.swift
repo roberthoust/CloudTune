@@ -135,13 +135,16 @@ final class LibraryViewModel: ObservableObject {
         } else {
             // 4) Cold load + enrich from the *restored folders* (current install)
             var loaded: [Song] = []
+            var lookups: [(items: [OnlineLookup], folder: URL)] = []
             for folder in savedFolders {
-                let enriched = await loadAndEnrichSongs(from: folder)
-                loaded.append(contentsOf: enriched)
+                let result = await loadAndEnrichSongs(from: folder)
+                loaded.append(contentsOf: result.songs)
+                lookups.append((result.needsLookup, folder))
             }
             self.songs = loaded
             scheduleRebuildAlbumBuckets()
             scheduleSaveLibrary()
+            for l in lookups { startOnlineLookups(l.items, in: l.folder) }
         }
 
         // 5) Remember the container we used to populate cache
@@ -151,47 +154,86 @@ final class LibraryViewModel: ObservableObject {
     // MARK: - Import / Scan
 
     func loadSongs(from folderURL: URL) async {
-        let enriched = await loadAndEnrichSongs(from: folderURL)
-        guard !enriched.isEmpty else { return }
-        await appendSongs(enriched, from: folderURL)
-        BookmarkStore.shared.saveBookmark(forFolder: folderURL)
+        await importAndEnrich(folderURL)
     }
 
+    /// Import a folder: songs appear as soon as their tags are read; songs with
+    /// incomplete tags are then looked up online in the background and updated in place.
     func importAndEnrich(_ folderURL: URL) async {
-        let enriched = await loadAndEnrichSongs(from: folderURL)
-        guard !enriched.isEmpty else { return }
-        await appendSongs(enriched, from: folderURL)
+        let result = await loadAndEnrichSongs(from: folderURL)
+        guard !result.songs.isEmpty else { return }
+        await appendSongs(result.songs, from: folderURL)
         BookmarkStore.shared.saveBookmark(forFolder: folderURL)
+        startOnlineLookups(result.needsLookup, in: folderURL)
     }
 
-    private func loadAndEnrichSongs(from folderURL: URL) async -> [Song] {
-        // Load file URLs off the main thread
-        let raw = await SongLoader.loadSongs(from: folderURL)
-        guard !raw.isEmpty else { return [] }
+    typealias OnlineLookup = (raw: Song, shown: Song)
 
-        // Limit concurrency to keep CPU/thermal in check
-        let chunkSize = 8
-        var enrichedAll: [Song] = []
-        for chunk in raw.chunked(into: chunkSize) {
-            do {
-                let enrichedChunk = try await withThrowingTaskGroup(of: Song.self) { group in
-                    for s in chunk { group.addTask { await self.enrich(song: s) } }
-                    return try await group.reduce(into: [Song]()) { $0.append($1) }
-                }
-                enrichedAll.append(contentsOf: enrichedChunk)
-            } catch {
-                print("❌ Metadata enrichment chunk failed: \(error)")
-                enrichedAll.append(contentsOf: chunk) // fall back to raw for this chunk
-            }
-        }
+    /// Fast, offline part of import (tags + cleanup + album naming). Never touches the network.
+    private func loadAndEnrichSongs(from folderURL: URL) async -> (songs: [Song], needsLookup: [OnlineLookup]) {
+        let scan = await SongLoader.scanLocal(from: folderURL)
+        guard !scan.songs.isEmpty else { return ([], []) }
+
+        var cleaned: [Song] = []
+        cleaned.reserveCapacity(scan.songs.count)
+        for s in scan.songs { cleaned.append(await enrich(song: s)) }
 
         // Pick a final album display name and persist mapping for this folder
-        let finalAlbumName = resolveFinalAlbumName(from: enrichedAll, folderURL: folderURL)
+        let finalAlbumName = resolveFinalAlbumName(from: cleaned, folderURL: folderURL)
         albumMappings[folderURL.path] = finalAlbumName
         AlbumMappingStore.save(albumMappings)
 
         // Rewrite album field so grouping is stable
-        return renameSongs(enrichedAll, withAlbumName: finalAlbumName)
+        return (renameSongs(cleaned, withAlbumName: finalAlbumName), scan.needsLookup)
+    }
+
+    /// Slow, online part of import. Runs one song at a time (MusicBrainz allows ~1 request/sec)
+    /// and updates each song in the library as its result arrives.
+    private func startOnlineLookups(_ items: [OnlineLookup], in folderURL: URL) {
+        guard !items.isEmpty else { return }
+        Task { [weak self] in
+            var found: [Song] = []
+            for item in items {
+                let improved = await SongLoader.lookUpOnline(raw: item.raw, shown: item.shown)
+                guard let self else { return }
+                let cleaned = await self.enrich(song: improved)
+                found.append(cleaned)
+                self.applyLookup(cleaned)
+            }
+            self?.refreshAlbumName(for: folderURL, using: found)
+        }
+    }
+
+    /// Swap in an improved song, keeping its current album so album groups don't flicker mid-import.
+    private func applyLookup(_ improved: Song) {
+        guard let i = songs.firstIndex(where: { $0.id == improved.id }) else { return }
+        var updated = improved
+        updated.album = songs[i].album
+        guard updated != songs[i] else { return }
+        songs[i] = updated
+        scheduleSaveLibrary()
+        scheduleRebuildAlbumBuckets()
+    }
+
+    /// After all lookups for a folder finish, re-pick the album name now that online results are in.
+    private func refreshAlbumName(for folderURL: URL, using found: [Song]) {
+        let foundByID = Dictionary(found.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let folderPath = folderURL.standardizedFileURL.path
+        let folderSongs = songs.filter { $0.url.standardizedFileURL.path.hasPrefix(folderPath) }
+        guard !folderSongs.isEmpty else { return }
+
+        let candidates = folderSongs.map { foundByID[$0.id] ?? $0 }
+        let name = resolveFinalAlbumName(from: candidates, folderURL: folderURL)
+        guard name != albumMappings[folderURL.path] else { return }
+
+        print("🏷️ Album name for \(folderURL.lastPathComponent) updated → \(name)")
+        albumMappings[folderURL.path] = name
+        AlbumMappingStore.save(albumMappings)
+        for i in songs.indices where songs[i].url.standardizedFileURL.path.hasPrefix(folderPath) {
+            songs[i].album = name
+        }
+        scheduleSaveLibrary()
+        scheduleRebuildAlbumBuckets()
     }
 
     private func enrich(song: Song) async -> Song {
@@ -416,11 +458,8 @@ final class LibraryViewModel: ObservableObject {
     }
 
     private func renameSongs(_ songs: [Song], withAlbumName albumName: String) -> [Song] {
-        songs.map {
-            Song(id: $0.id, title: $0.title, artist: $0.artist, album: albumName,
-                 duration: $0.duration, url: $0.url, artworkID: $0.artworkID,
-                 genre: $0.genre, year: $0.year, trackNumber: $0.trackNumber, discNumber: $0.discNumber)
-        }
+        // Copy-and-modify keeps every other field (MusicBrainz ID, link, tags) intact.
+        songs.map { var s = $0; s.album = albumName; return s }
     }
 
     /// Delete sidecar files we created (optional cleanup so art/json don’t keep albums visible).
