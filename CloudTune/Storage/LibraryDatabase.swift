@@ -124,7 +124,25 @@ final class LibraryDatabase {
             }
         }
 
+        // Clean up titles imported before SongTitle existed ("04 21 Savage - Bad Guy" → "Bad Guy").
+        // v4 runs it again after the artist match learned to ignore punctuation ("Tyler The Creator -- …").
+        migrator.registerMigration("v3-clean-titles", migrate: cleanStoredTitles)
+        migrator.registerMigration("v4-clean-titles-punctuation", migrate: cleanStoredTitles)
+
         return migrator
+    }
+
+    private static func cleanStoredTitles(_ db: Database) throws {
+        let rows = try Row.fetchAll(db, sql: "SELECT id, title, artist, album, trackNumber FROM song")
+        for row in rows {
+            let title: String = row["title"], artist: String = row["artist"], album: String = row["album"]
+            let cleaned = SongTitle.cleaned(title, artist: artist, trackNumber: row["trackNumber"])
+            guard cleaned != title else { continue }
+            try db.execute(sql: "UPDATE song SET title = ?, titleSort = ?, searchText = ? WHERE id = ?",
+                           arguments: [cleaned, SongSortKey.sortKey(cleaned),
+                                       SongSortKey.searchText(title: cleaned, artist: artist, album: album),
+                                       row["id"] as String])
+        }
     }
 
     // MARK: - Records

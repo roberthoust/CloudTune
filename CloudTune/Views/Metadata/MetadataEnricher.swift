@@ -653,6 +653,10 @@ final class MetadataEnricher {
             working.artist = a
         }
 
+        // STEP 2c — TITLE CLEANUP
+        // Drop leading track numbers and "Artist - " now that the artist is settled.
+        working.title = SongTitle.cleaned(working.title, artist: working.artist, trackNumber: working.trackNumber)
+
         log.debug("Cleaned → title='\(working.title, privacy: .public)' artist='\(working.artist, privacy: .public)' album='\(working.album, privacy: .public)'")
         return working
     }

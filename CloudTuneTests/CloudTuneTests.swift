@@ -172,6 +172,33 @@ struct CloudTuneTests {
         #expect(db.songIDs(sortedBy: .title) == ["1", "4", "3", "2"])
     }
 
+    @Test(arguments: [
+        // (title, artist, track) → expected
+        ("04 21 Savage - Bad Guy (Chopped Not Slopped)", "21 Savage", 4, "Bad Guy (Chopped Not Slopped)"),
+        ("21 Savage - Close My Eyes", "21 Savage", 3, "Close My Eyes"),
+        ("01 - Intro", "Drake", 1, "Intro"),
+        ("1. Intro", "Drake", 0, "Intro"),
+        ("07_Intro", "Drake", 7, "Intro"),
+        ("03 Bonnie & Clyde", "Jay-Z", 3, "Bonnie & Clyde"),
+        ("Metallica – One", "Metallica", 0, "One"),
+        ("Drake - Jumpman", "Drake & Future", 0, "Jumpman"),
+        ("02 Beyonce - Halo", "Beyoncé", 2, "Halo"),
+        ("Tyler the Creator -- Goblin", "Tyler, The Creator", 1, "Goblin"),
+        ("Tyler The Creator- Transylvania", "Tyler, The Creator", 5, "Transylvania"),
+        // Real titles that start with numbers or look like prefixes stay as they are.
+        ("7 Rings", "Ariana Grande", 7, "7 Rings"),
+        ("99 Problems", "Jay-Z", 99, "99 Problems"),
+        ("21 Questions", "50 Cent", 0, "21 Questions"),
+        ("1-800-273-8255", "Logic", 0, "1-800-273-8255"),
+        ("Bad Guy", "Unknown Artist", 0, "Bad Guy"),
+        ("Drake", "Drake", 0, "Drake"),
+        ("Other Artist - Song", "Drake", 0, "Other Artist - Song"),
+        ("Drakeo - Song", "Drake", 0, "Drakeo - Song"),
+    ])
+    func titleCleanup(_ c: (String, String, Int, String)) {
+        #expect(SongTitle.cleaned(c.0, artist: c.1, trackNumber: c.2) == c.3)
+    }
+
     @Test func coverThumbnailsAreSmallAndCached() async throws {
         // A 1200×1200 "cover"
         let big = UIGraphicsImageRenderer(size: CGSize(width: 1200, height: 1200),
