@@ -137,6 +137,41 @@ struct CloudTuneTests {
         #expect(songs.first?.url.path == "/music/a.mp3")
     }
 
+    @Test func databaseSortsAndSearchesSongs() throws {
+        let db = try LibraryDatabase(dbQueue: DatabaseQueue())
+        let folder = URL(fileURLWithPath: "/music")
+        db.saveFolder(key: "/music", url: folder)
+        func song(_ id: String, _ title: String, _ artist: String, _ album: String = "Al") -> Song {
+            Song(id: id, title: title, artist: artist, album: album, duration: 1, url: folder.appendingPathComponent("\(id).mp3"))
+        }
+        db.saveSongs([
+            song("1", "The Zebra", "Beyoncé"),
+            song("2", "Track 10", "ABBA"),
+            song("3", "Track 2", "ABBA"),
+            song("4", "01 - apple", "Coldplay", "Café Hits"),
+        ])
+        // No waitForPendingWrites: queries must see writes queued before them.
+
+        #expect(db.songIDs(sortedBy: .recent) == ["4", "3", "2", "1"])
+        // Track numbers and "The" are ignored, numbers compare naturally (2 before 10).
+        #expect(db.songIDs(sortedBy: .title) == ["4", "3", "2", "1"])
+        #expect(SongSortKey.sortKey("01 - Apple") == "apple")
+        #expect(SongSortKey.sortKey("07_Intro") == "intro")
+        #expect(SongSortKey.sortKey("The Zebra") == "zebra")
+        #expect(db.songIDs(sortedBy: .artist) == ["3", "2", "1", "4"])
+
+        // Case and accents don't matter; every word must match somewhere; album counts.
+        #expect(db.searchSongIDs("beyonce") == ["1"])
+        #expect(db.searchSongIDs("CAFE") == ["4"])
+        #expect(db.searchSongIDs("abba 10") == ["2"])
+        #expect(db.searchSongIDs("track") == ["3", "2"])
+        #expect(db.searchSongIDs("100%").isEmpty)  // % is literal, not a wildcard
+
+        // Renaming updates the sort key.
+        db.saveSongs([song("1", "Aardvark", "Beyoncé")])
+        #expect(db.songIDs(sortedBy: .title) == ["1", "4", "3", "2"])
+    }
+
     @Test func coverThumbnailsAreSmallAndCached() async throws {
         // A 1200×1200 "cover"
         let big = UIGraphicsImageRenderer(size: CGSize(width: 1200, height: 1200),
