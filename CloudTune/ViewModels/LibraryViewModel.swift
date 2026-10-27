@@ -6,7 +6,11 @@ import UIKit
 @MainActor
 final class LibraryViewModel: ObservableObject {
     // MARK: - Published state
-    @Published private(set) var songs: [Song] = []
+    @Published private(set) var songs: [Song] = [] {
+        didSet { songsVersion &+= 1 }
+    }
+    /// Changes whenever `songs` does; cheap for views to watch instead of comparing the whole array.
+    @Published private(set) var songsVersion = 0
     @Published private(set) var savedFolders: [URL] = []
     @Published private(set) var playlists: [Playlist] = []
     @Published private(set) var albumMappings: [String: String] = [:]
@@ -121,6 +125,32 @@ final class LibraryViewModel: ObservableObject {
             db.saveSongs(loaded)
             for l in lookups { startOnlineLookups(l.items, in: l.folder) }
         }
+    }
+
+    // MARK: - Sorted / searched lists (done by the database)
+
+    func songs(sortedBy sort: SongSortOption) async -> [Song] {
+        let db = self.db
+        let ids = await Task.detached(priority: .userInitiated) { db.songIDs(sortedBy: sort) }.value
+        return songs(forIDs: ids, appendingMissing: true)
+    }
+
+    func searchSongs(_ query: String) async -> [Song] {
+        let db = self.db
+        let ids = await Task.detached(priority: .userInitiated) { db.searchSongIDs(query) }.value
+        return songs(forIDs: ids, appendingMissing: false)
+    }
+
+    /// Maps database IDs to the songs in memory (skipping ones pruned this session).
+    /// `appendingMissing` adds any in-memory songs the database didn't return, so nothing vanishes from a full list.
+    private func songs(forIDs ids: [String], appendingMissing: Bool) -> [Song] {
+        let byID = Dictionary(songs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        var result = ids.compactMap { byID[$0] }
+        if appendingMissing, result.count < songs.count {
+            let returned = Set(ids)
+            result.append(contentsOf: songs.filter { !returned.contains($0.id) })
+        }
+        return result
     }
 
     // MARK: - Import / Scan

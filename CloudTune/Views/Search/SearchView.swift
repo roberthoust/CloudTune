@@ -53,8 +53,8 @@ struct SearchView: View {
             }
             // Initial fill + react to library changes
             .onAppear { results = libraryVM.songs }
-            .onChange(of: libraryVM.songs) { newSongs, _ in
-                if searchText.isEmpty { results = newSongs } else { debouncedSearch() }
+            .onChange(of: libraryVM.songsVersion) { _, _ in
+                if searchText.isEmpty { results = libraryVM.songs } else { debouncedSearch() }
             }
             // Debounced background filtering
             .onChange(of: searchText) { _, _ in debouncedSearch() }
@@ -78,75 +78,24 @@ struct SearchView: View {
         // Cancel any in-flight task
         searchTask?.cancel()
 
-        // Snapshot values to avoid racing with typing
+        // Snapshot the query to avoid racing with typing
         let query = searchText
-        let corpus = libraryVM.songs
 
-        // Launch a non-throwing async task (matches Task<Void, Never>)
-        searchTask = Task { [query, corpus] in
-            // Small debounce to avoid filtering on every keystroke
+        searchTask = Task {
+            // Small debounce to avoid searching on every keystroke
             _ = try? await Task.sleep(nanoseconds: 220_000_000) // 0.22s
-
-            // If cancelled, bail without throwing
             if Task.isCancelled { return }
 
             // Fast path: empty query shows all
-            guard !query.isEmpty else {
-                await MainActor.run { results = corpus }
+            guard !query.trimmingCharacters(in: .whitespaces).isEmpty else {
+                results = libraryVM.songs
                 return
             }
 
-            // Lowercase once; filter off the main thread
-            let q = query.lowercased()
-            let filtered = await filterSongs(queryLowercased: q, in: corpus)
-
-            // Publish back on main thread
-            await MainActor.run { results = filtered }
-        }
-    }
-
-    private func filterSongs(queryLowercased q: String, in songs: [Song]) async -> [Song] {
-        // Run on a background executor
-        await withTaskGroup(of: [Song].self) { group in
-            // Chunk to keep big libraries smooth
-            let chunkSize = 512
-            for chunk in songs.chunked(into: chunkSize) {
-                group.addTask {
-                    var out: [Song] = []
-                    out.reserveCapacity(chunk.count)
-                    for s in chunk {
-                        // Avoid allocating strings repeatedly
-                        let title = s.displayTitle.lowercased()
-                        let artist = s.displayArtist.lowercased()
-                        if title.contains(q) || artist.contains(q) {
-                            out.append(s)
-                        }
-                    }
-                    return out
-                }
-            }
-
-            var aggregate: [Song] = []
-            for await part in group {
-                aggregate.append(contentsOf: part)
-            }
-            return aggregate
+            // The database matches title, artist and album, ignoring case and accents
+            let found = await libraryVM.searchSongs(query)
+            if !Task.isCancelled { results = found }
         }
     }
 }
 
-// MARK: - Tiny helper
-private extension Array {
-    func chunked(into size: Int) -> [[Element]] {
-        guard size > 0, !isEmpty else { return isEmpty ? [] : [self] }
-        var result: [[Element]] = []
-        result.reserveCapacity((count + size - 1) / size)
-        var i = startIndex
-        while i < endIndex {
-            let j = index(i, offsetBy: size, limitedBy: endIndex) ?? endIndex
-            result.append(Array(self[i..<j]))
-            i = j
-        }
-        return result
-    }
-}

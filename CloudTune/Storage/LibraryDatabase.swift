@@ -106,6 +106,24 @@ final class LibraryDatabase {
             }
         }
 
+        // Sort and search keys, so the Songs and Search screens can ask the database
+        // instead of sorting/filtering the whole library in memory.
+        migrator.registerMigration("v2-sort-search") { db in
+            try db.alter(table: "song") { t in
+                t.add(column: "titleSort", .text).notNull().defaults(to: "")
+                t.add(column: "artistSort", .text).notNull().defaults(to: "")
+                t.add(column: "searchText", .text).notNull().defaults(to: "")
+            }
+            let rows = try Row.fetchAll(db, sql: "SELECT id, title, artist, album FROM song")
+            for row in rows {
+                let title: String = row["title"], artist: String = row["artist"], album: String = row["album"]
+                try db.execute(sql: "UPDATE song SET titleSort = ?, artistSort = ?, searchText = ? WHERE id = ?",
+                               arguments: [SongSortKey.sortKey(title), SongSortKey.sortKey(artist),
+                                           SongSortKey.searchText(title: title, artist: artist, album: album),
+                                           row["id"] as String])
+            }
+        }
+
         return migrator
     }
 
@@ -142,9 +160,15 @@ final class LibraryDatabase {
         var localPath: String?
         var downloadState: String = "downloaded"
         var addedAt: Date = Date()
+        var titleSort: String
+        var artistSort: String
+        var searchText: String
 
         init(song: Song, folderID: String?, relativePath: String?) {
             id = song.id; title = song.title; artist = song.artist; album = song.album
+            titleSort = SongSortKey.sortKey(song.title)
+            artistSort = SongSortKey.sortKey(song.artist)
+            searchText = SongSortKey.searchText(title: song.title, artist: song.artist, album: song.album)
             duration = song.duration; artworkID = song.artworkID
             musicBrainzReleaseID = song.musicBrainzReleaseID
             genre = song.genre; year = song.year
@@ -245,6 +269,40 @@ final class LibraryDatabase {
                     }
                 }
             }
+        }
+    }
+
+    /// Song IDs in the given order. Blocking; call off the main thread.
+    /// Runs after any queued writes, so songs saved just before are included.
+    func songIDs(sortedBy sort: SongSortOption) -> [String] {
+        let title = Column("titleSort").collating(.localizedStandardCompare)
+        let artist = Column("artistSort").collating(.localizedStandardCompare)
+        let order: [any SQLOrderingTerm]
+        switch sort {
+        case .recent: order = [Column("addedAt").desc, Column.rowID.desc]
+        case .title:  order = [title, artist, Column("id")]
+        case .artist: order = [artist, title, Column("id")]
+        }
+        return readAfterWrites("songIDs(sortedBy:)") { db in
+            try String.fetchAll(db, SongRecord.select(Column("id")).order(order))
+        }
+    }
+
+    /// IDs of songs whose title, artist or album contain every word of `query`
+    /// (ignoring case and accents), sorted by title. Blocking; call off the main thread.
+    func searchSongIDs(_ query: String) -> [String] {
+        let words = SongSortKey.searchWords(query)
+        var request = SongRecord.select(Column("id"))
+        for word in words {
+            let escaped = word
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "%", with: "\\%")
+                .replacingOccurrences(of: "_", with: "\\_")
+            request = request.filter(sql: "searchText LIKE ? ESCAPE '\\'", arguments: ["%\(escaped)%"])
+        }
+        request = request.order(Column("titleSort").collating(.localizedStandardCompare), Column("id"))
+        return readAfterWrites("searchSongIDs") { db in
+            try String.fetchAll(db, request)
         }
     }
 
@@ -350,6 +408,17 @@ final class LibraryDatabase {
     /// Blocks until all queued writes have finished (tests, app shutdown).
     func waitForPendingWrites() {
         writeQueue.sync {}
+    }
+
+    private func readAfterWrites<T>(_ label: String, _ value: (Database) throws -> [T]) -> [T] {
+        writeQueue.sync {
+            do {
+                return try dbQueue.read(value)
+            } catch {
+                print("❌ LibraryDatabase.\(label):", error)
+                return []
+            }
+        }
     }
 
     private func write(_ label: String, _ updates: (Database) throws -> Void) {
