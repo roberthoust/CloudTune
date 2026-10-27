@@ -37,11 +37,6 @@
 //  │    - Try /release/<id>/front-250, then /release-group/<id>/front-250      │
 //  │    - Cache in-memory, write JPEG sidecar next to audio file.               │
 //  │                                                                            │
-//  │ 5) DEEZER FALLBACK (fills only album/duration/link):                       │
-//  │    - GET: /search?q=track:"<title>" artist:"<artist>"                     │
-//  │    - Use only to fill missing album / duration / external link.            │
-//  │    - Replace artist ONLY if placeholder or equals album (weak signal).     │
-//  │                                                                            │
 //  │ 6) WRITE SIDECAR JSON                                                      │
 //  │    - .metadata/<filename>.json with: source, confidence, title, artist,    │
 //  │      album, year, track, disc, duration, MBID, externalURL.               │
@@ -76,10 +71,9 @@ import OSLog
 // MARK: - Config
 
 enum EnricherConfig {
-    static let musicBrainzUserAgent = "CloudTune/1.0 (contact: support@cloudtune.app)"
+    static var musicBrainzUserAgent: String { AppInfo.userAgent }
     static let musicBrainzBase = "https://musicbrainz.org/ws/2"
     static let coverArtBase = "https://coverartarchive.org"
-    static let deezerBase = "https://api.deezer.com"
 
     static let requestTimeout: TimeInterval = 12
     static let musicBrainzRateLimit: TimeInterval = 1.1  // ≥1 req/sec app-wide
@@ -441,20 +435,7 @@ private struct MBTrack: Decodable {
     let title: String?
 }
 
-// MARK: - Deezer DTOs (minimal)
-
-private struct DeezerSearchResponse: Decodable { let data: [DeezerTrack] }
-private struct DeezerTrack: Decodable {
-    let title: String?
-    let duration: Int?
-    let link: String?
-    let artist: DeezerArtist?
-    let album: DeezerAlbum?
-}
-private struct DeezerArtist: Decodable { let name: String? }
-private struct DeezerAlbum: Decodable { let title: String? }
-
-// MARK: - MB / DZ calls
+// MARK: - MusicBrainz calls
 
 /// Constructs a MusicBrainz Lucene query:
 ///   recording:"<title>"^3 AND artist:"<artist>"^2 [AND dur:range]
@@ -527,25 +508,6 @@ private func fetchArtworkData(releaseID: String?, releaseGroupID: String?) async
     return nil
 }
 
-/// Queries Deezer as a weak-signal fallback:
-/// - GET /search?q=track:"title" artist:"artist"
-/// - Used to fill missing album/duration/link only
-/// - Artist is only replaced if current artist is placeholder or equals album
-private func searchDeezer(artist: String, title: String) async -> DeezerTrack? {
-    let t = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-    let a = artist.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-    let urlStr = "\(EnricherConfig.deezerBase)/search?q=track:\"\(t)\" artist:\"\(a)\""
-    guard let url = URL(string: urlStr) else { return nil }
-    do {
-        let data = try await HTTP.getData(url: url, cacheKey: "dz:\(urlStr)")
-        let resp = try HTTP.decode(DeezerSearchResponse.self, from: data)
-        return resp.data.first
-    } catch {
-        log.info("Deezer search failed: \(error.localizedDescription, privacy: .public)")
-        return nil
-    }
-}
-
 // MARK: - Scoring & merging
 
 // MARK: - Local tag reading
@@ -596,7 +558,7 @@ final class MetadataEnricher {
         isPlaceholder(song.title) || isPlaceholder(song.artist) || isPlaceholder(song.album) || song.duration <= 0
     }
 
-    /// Main entry: Local tags → folder hints → filename → MusicBrainz → Artwork → Deezer → Save sidecar
+    /// Main entry: Local tags → folder hints → filename → MusicBrainz → Artwork → Save sidecar
     static func enrich(_ song: Song) async throws -> Song {
         let working = enrichLocal(song)
         let hints = folderHints(from: song.url)
@@ -661,7 +623,7 @@ final class MetadataEnricher {
         return working
     }
 
-    /// Steps 3–6: MusicBrainz, cover art, Deezer, sidecar. Slow (rate-limited network), run in the background.
+    /// Steps 3–6: MusicBrainz, cover art, sidecar. Slow (rate-limited network), run in the background.
     private static func enrichOnline(_ cleaned: Song, original song: Song,
                                      hints: (artist: String?, album: String?),
                                      parsed: (artist: String?, title: String)) async -> Song {
@@ -757,23 +719,6 @@ final class MetadataEnricher {
                     }
                 }
             }
-        }
-
-        // STEP 5 — DEEZER FALLBACK (fill album/duration/link only)
-        if (working.album.isEmpty || working.duration == 0),
-           !working.title.isEmpty, !working.artist.isEmpty,
-           let dz = await searchDeezer(artist: working.artist, title: working.title) {
-            queryUsed = (confidenceUsed > 0 ? queryUsed + "+deezer" : "deezer")
-            working.title  = coalesceSmart(dz.title, working.title)
-            if let an = dz.artist?.name {
-                // Deezer is a weaker signal; only replace if artist is placeholder or equals album
-                if isPlaceholder(working.artist) || working.artist.caseInsensitiveCompare(working.album) == .orderedSame {
-                    working.artist = an
-                }
-            }
-            if let alb = dz.album?.title { working.album = coalesceSmart(alb, working.album) }
-            if let dur = dz.duration, working.duration == 0 { working.duration = Double(dur) }
-            if let link = dz.link { working.externalURL = link }
         }
 
         // STEP 6 — WRITE SIDECAR (diagnostics & provenance)

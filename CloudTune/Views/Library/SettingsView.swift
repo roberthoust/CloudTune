@@ -30,7 +30,7 @@ struct SettingsView: View {
             }
             .fileImporter(
                 isPresented: $showSongPicker,
-                allowedContentTypes: [.mp3],
+                allowedContentTypes: [.audio],   // MP3, FLAC, M4A, WAV, AIFF, …
                 allowsMultipleSelection: false
             ) { result in
                 switch result {
