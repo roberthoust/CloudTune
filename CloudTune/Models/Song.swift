@@ -9,8 +9,15 @@ struct Song: Identifiable, Codable, Equatable {
     var album: String
     var duration: Double
     var url: URL
-    var artwork: Data?
+    /// ID of the cover in `ArtworkStore`. Only the ID is saved in Library.json, not the image bytes.
+    var artworkID: String?
     var musicBrainzReleaseID: String?   // <- For fetching cover art from MusicBrainz
+
+    /// Cover image bytes, loaded from `ArtworkStore` on demand. Setting it stores the bytes there.
+    var artwork: Data? {
+        get { artworkID.flatMap { ArtworkStore.shared.data(for: $0) } }
+        set { artworkID = newValue.map { ArtworkStore.shared.save($0) } }
+    }
 
     var genre: String
     var year: String
@@ -20,7 +27,9 @@ struct Song: Identifiable, Codable, Equatable {
     var tags: [String]
 
     enum CodingKeys: String, CodingKey {
-        case id, title, artist, album, duration, url, artwork
+        case id, title, artist, album, duration, url
+        case artworkID
+        case artwork // legacy: raw image bytes from older Library.json files (read-only)
         case genre, year, trackNumber, discNumber
         case musicBrainzReleaseID
         case externalURL, tags
@@ -34,6 +43,7 @@ struct Song: Identifiable, Codable, Equatable {
         duration: Double,
         url: URL,
         artwork: Data? = nil,
+        artworkID: String? = nil,
         musicBrainzReleaseID: String? = nil,
         genre: String = "",
         year: String = "",
@@ -48,7 +58,7 @@ struct Song: Identifiable, Codable, Equatable {
         self.album = album
         self.duration = duration
         self.url = url
-        self.artwork = artwork
+        self.artworkID = artworkID ?? artwork.map { ArtworkStore.shared.save($0) }
         self.musicBrainzReleaseID = musicBrainzReleaseID
         self.genre = genre
         self.year = year
@@ -67,7 +77,14 @@ struct Song: Identifiable, Codable, Equatable {
         self.album = try container.decode(String.self, forKey: .album)
         self.duration = try container.decode(Double.self, forKey: .duration)
         self.url = try container.decode(URL.self, forKey: .url)
-        self.artwork = try container.decodeIfPresent(Data.self, forKey: .artwork)
+        if let id = try container.decodeIfPresent(String.self, forKey: .artworkID) {
+            self.artworkID = id
+        } else if let legacy = try container.decodeIfPresent(Data.self, forKey: .artwork) {
+            // Old format: move the embedded bytes into ArtworkStore (one-time migration).
+            self.artworkID = ArtworkStore.shared.save(legacy)
+        } else {
+            self.artworkID = nil
+        }
 
         self.musicBrainzReleaseID = try container.decodeIfPresent(String.self, forKey: .musicBrainzReleaseID)
         self.genre = try container.decodeIfPresent(String.self, forKey: .genre) ?? ""
@@ -76,6 +93,24 @@ struct Song: Identifiable, Codable, Equatable {
         self.discNumber = try container.decodeIfPresent(Int.self, forKey: .discNumber) ?? 0
         self.externalURL = try container.decodeIfPresent(String.self, forKey: .externalURL) ?? ""
         self.tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(artist, forKey: .artist)
+        try container.encode(album, forKey: .album)
+        try container.encode(duration, forKey: .duration)
+        try container.encode(url, forKey: .url)
+        try container.encodeIfPresent(artworkID, forKey: .artworkID)
+        try container.encodeIfPresent(musicBrainzReleaseID, forKey: .musicBrainzReleaseID)
+        try container.encode(genre, forKey: .genre)
+        try container.encode(year, forKey: .year)
+        try container.encode(trackNumber, forKey: .trackNumber)
+        try container.encode(discNumber, forKey: .discNumber)
+        try container.encode(externalURL, forKey: .externalURL)
+        try container.encode(tags, forKey: .tags)
     }
 
     var displayArtist: String {

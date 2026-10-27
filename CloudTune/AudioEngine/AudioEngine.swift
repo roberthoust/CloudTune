@@ -440,10 +440,11 @@ final class AudioEngine {
 
         try? session.setActive(false, options: .notifyOthersOnDeactivation)
         do {
-            // Allow playback to route to Bluetooth/AirPlay.
-            // - allowBluetoothA2DP: high quality stereo (music)
-            // - allowBluetooth: supports HFP devices (lower quality but prevents drops)
-            try session.setCategory(.playback, mode: .default, options: [.allowBluetooth, .allowBluetoothA2DP, .allowAirPlay])
+            // .playback already routes to Bluetooth (A2DP) and AirPlay on its own.
+            // The .allowBluetooth / .allowBluetoothA2DP / .allowAirPlay options are only valid
+            // with .playAndRecord; passing them here makes setCategory fail with -50, which
+            // leaves the app in the default category (silenced by the mute switch, no background audio).
+            try session.setCategory(.playback, mode: .default, options: [])
         } catch {
             print("❌ setCategory(.playback) failed: \(error.localizedDescription)")
         }

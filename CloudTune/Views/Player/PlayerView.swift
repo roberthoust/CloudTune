@@ -230,7 +230,7 @@ struct PlayerView: View {
                     songKey: song.id,
                     artworkData: song.artwork,
                     side: 240,
-                    hasArtwork: song.artwork != nil
+                    hasArtwork: song.artworkID != nil
                 )
                 .id(song.id) // ensure state is reset per track
 

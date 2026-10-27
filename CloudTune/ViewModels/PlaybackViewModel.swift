@@ -554,7 +554,7 @@ class PlaybackViewModel: NSObject, ObservableObject {
         let dur = duration
         let elapsed = currentTime
         let rate = isPlaying ? Double(playbackRate) : 0.0
-        let artHash = song.artwork?.hashValue ?? 0
+        let artHash = song.artworkID?.hashValue ?? 0
 
         let sig = NowPlayingSignature(title: title, artist: artist, duration: dur, elapsed: elapsed, rate: rate, artworkHash: artHash)
         if sig == lastNPSignature { return }

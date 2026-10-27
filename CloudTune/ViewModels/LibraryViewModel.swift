@@ -124,7 +124,7 @@ final class LibraryViewModel: ObservableObject {
         // 2) Cache gating by container UUID
         let thisContainer = currentContainerID()
         let lastContainer = UserDefaults.standard.string(forKey: "lastContainerID")
-        let cachedSongs = FilePersistence.loadLibrary()
+        let cachedSongs = await Task.detached(priority: .userInitiated) { FilePersistence.loadLibrary() }.value
         let shouldUseCache = (lastContainer == thisContainer) && !cachedSongs.isEmpty
 
         if shouldUseCache {
@@ -212,7 +212,7 @@ final class LibraryViewModel: ObservableObject {
             album: cleanAlbum,
             duration: song.duration,
             url: song.url,
-            artwork: song.artwork,
+            artworkID: song.artworkID,
             musicBrainzReleaseID: song.musicBrainzReleaseID,
             genre: cleanGenre ?? song.genre,
             year: cleanYear,
@@ -371,12 +371,12 @@ final class LibraryViewModel: ObservableObject {
         }
 
         // 3) Build from embedded artwork data (if any)
-        guard let artData = song.artwork else { return nil }
+        guard song.artworkID != nil else { return nil }
 
-        // Do the resize off the main thread
+        // Read + resize off the main thread
         return await withCheckedContinuation { continuation in
             thumbIO.async { [weak self] in
-                guard let self else { continuation.resume(returning: nil); return }
+                guard let self, let artData = song.artwork else { continuation.resume(returning: nil); return }
                 let img = self.makeThumbnail(from: artData, side: CGSize(width: sideInt, height: sideInt))
                 if let img {
                     // Save to caches
@@ -418,7 +418,7 @@ final class LibraryViewModel: ObservableObject {
     private func renameSongs(_ songs: [Song], withAlbumName albumName: String) -> [Song] {
         songs.map {
             Song(id: $0.id, title: $0.title, artist: $0.artist, album: albumName,
-                 duration: $0.duration, url: $0.url, artwork: $0.artwork,
+                 duration: $0.duration, url: $0.url, artworkID: $0.artworkID,
                  genre: $0.genre, year: $0.year, trackNumber: $0.trackNumber, discNumber: $0.discNumber)
         }
     }
