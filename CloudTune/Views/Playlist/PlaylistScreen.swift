@@ -9,37 +9,6 @@ private enum PlaylistViewMode: String, CaseIterable, Identifiable {
     var systemImage: String { self == .grid ? "square.grid.2x2" : "list.bullet" }
 }
 
-// Make the cover reusable at different sizes (grid vs list)
-struct PlaylistCoverImageView: View {
-    let playlist: Playlist
-    var side: CGFloat = 150
-
-    var body: some View {
-        ZStack {
-            if let filename = playlist.coverArtFilename {
-                let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-                let path = folder.appendingPathComponent(filename).path
-                if let image = UIImage(contentsOfFile: path) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    Image("DefaultCover")
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                }
-            } else {
-                Image("DefaultCover")
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            }
-        }
-        .frame(width: side, height: side)
-        .cornerRadius(side * 0.093)   // scale radius with size
-        .clipped()
-    }
-}
-
 struct PlaylistScreen: View {
     @EnvironmentObject var playlistVM: PlaylistViewModel
     @EnvironmentObject var libraryVM: LibraryViewModel
@@ -198,12 +167,12 @@ struct PlaylistScreen: View {
             }
         }
         .sheet(isPresented: $showCreateSheet) {
-            PlaylistCreationView(preloadedSong: nil)
+            PlaylistEditorView()
                 .environmentObject(playlistVM)
                 .environmentObject(libraryVM)
         }
         .sheet(item: $editingPlaylist) { playlist in
-            PlaylistEditView(playlist: playlist)
+            PlaylistEditorView(playlist: playlist)
                 .environmentObject(playlistVM)
                 .environmentObject(libraryVM)
         }

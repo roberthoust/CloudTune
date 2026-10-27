@@ -141,6 +141,13 @@ final class LibraryViewModel: ObservableObject {
         return songs(forIDs: ids, appendingMissing: false)
     }
 
+    /// For song pickers (playlists): everything A–Z when the query is empty, otherwise search results.
+    func pickerSongs(matching query: String) async -> [Song] {
+        query.trimmingCharacters(in: .whitespaces).isEmpty
+            ? await songs(sortedBy: .title)
+            : await searchSongs(query)
+    }
+
     /// Maps database IDs to the songs in memory (skipping ones pruned this session).
     /// `appendingMissing` adds any in-memory songs the database didn't return, so nothing vanishes from a full list.
     private func songs(forIDs ids: [String], appendingMissing: Bool) -> [Song] {
