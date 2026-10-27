@@ -223,4 +223,107 @@ struct CloudTuneTests {
         let b = Song(title: "2", artist: "", album: "", duration: 0, url: URL(fileURLWithPath: "/b.mp3"), artwork: art)
         #expect(a.artworkID == b.artworkID)
     }
+
+    // MARK: - Album details
+
+    private func albumSong(_ id: String, _ title: String, artist: String, album: String = "Goblin",
+                           year: String = "", genre: String = "", track: Int = 0, art: String? = "real") -> Song {
+        Song(id: id, title: title, artist: artist, album: album, duration: 1,
+             url: URL(fileURLWithPath: "/music/\(id).mp3"), artworkID: art,
+             genre: genre, year: year, trackNumber: track)
+    }
+
+    @Test func albumLookupPicksTheRightRelease() throws {
+        let json = """
+        {"releases": [
+          {"id": "bootleg", "score": 100, "title": "Goblin", "status": "Bootleg", "date": "2010", "track-count": 18,
+           "artist-credit": [{"name": "Tyler, The Creator"}], "release-group": {"primary-type": "Album"}},
+          {"id": "short", "score": 100, "title": "Goblin", "status": "Official", "date": "2011-05-10", "track-count": 15,
+           "artist-credit": [{"name": "Tyler, The Creator"}], "release-group": {"primary-type": "Album"}},
+          {"id": "deluxe", "score": 100, "title": "Goblin (Deluxe Edition)", "status": "Official", "date": "2011-05-10",
+           "track-count": 18, "artist-credit": [{"name": "Tyler, The Creator"}], "release-group": {"primary-type": "Album"}},
+          {"id": "other-artist", "score": 95, "title": "Goblin", "status": "Official", "date": "2001", "track-count": 18,
+           "artist-credit": [{"name": "Someone Else"}], "release-group": {"primary-type": "Album"}},
+          {"id": "low-score", "score": 40, "title": "Goblin", "status": "Official", "track-count": 18,
+           "artist-credit": [{"name": "Tyler, The Creator"}]}
+        ]}
+        """
+        let hits = try #require(try JSONDecoder().decode(MBReleaseSearch.self, from: Data(json.utf8)).releases)
+
+        // 18 songs: an official 18-track release (title ignoring "(Deluxe Edition)") beats the 15-track one and the bootleg.
+        #expect(AlbumLookup.bestRelease(hits, album: "Goblin", artist: "Tyler The Creator", songCount: 18)?.id == "deluxe")
+        // 15 songs: the closest track count wins.
+        #expect(AlbumLookup.bestRelease(hits, album: "Goblin", artist: "Tyler, The Creator", songCount: 15)?.id == "short")
+        // Wrong artist or wrong title: nothing.
+        #expect(AlbumLookup.bestRelease(hits, album: "Goblin", artist: "Drake", songCount: 18) == nil)
+        #expect(AlbumLookup.bestRelease(hits, album: "Wolf", artist: "Tyler, The Creator", songCount: 18) == nil)
+
+        #expect(AlbumLookup.sameTitle("I Don’t Like Shit, I Don’t Go Outside: An Album by Earl Sweatshirt",
+                                      "I Don't Like Shit, I Don't Go Outside"))
+        #expect(AlbumLookup.sameTitle("To Pimp a Butterfly", "To Pimp A Butterfly"))
+        #expect(!AlbumLookup.sameTitle("Graduation", "Late Registration"))
+    }
+
+    @Test func albumDetailsOnlyFillGaps() {
+        let info = AlbumInfo(key: "goblin|tyler, the creator", releaseID: "rel", releaseGroupID: "rg",
+                             title: "Goblin", artist: "Tyler, The Creator", year: "2011", genre: "Hip Hop",
+                             tracks: [.init(disc: 2, number: 11, title: "Analog", artist: "Tyler, The Creator feat. Hodgy Beats"),
+                                      .init(disc: 1, number: 4, title: "She", artist: "Tyler, The Creator feat. Frank Ocean")],
+                             hasCover: true)
+        func apply(_ s: Song, cover: String? = "cover") -> Song {
+            AlbumLookup.apply(info, to: s, album: "Goblin", coverID: cover, defaultArtworkID: "default")
+        }
+
+        // Gaps get filled; the "album name as artist" tag gets the track's real artist.
+        let analog = apply(albumSong("a", "Analog", artist: "Goblin", art: "default"))
+        #expect(analog.year == "2011")
+        #expect(analog.genre == "Hip Hop")
+        #expect(analog.trackNumber == 11)
+        #expect(analog.artist == "Tyler, The Creator feat. Hodgy Beats")
+        #expect(analog.artworkID == "cover")
+        #expect(analog.musicBrainzReleaseID == "rel")
+        #expect(analog.discNumber == 0)   // discs are left to the files
+
+        // Real values are kept; "(feat. …)" in our title still matches the track.
+        let she = apply(albumSong("s", "She (feat. Frank Ocean)", artist: "Tyler, The Creator",
+                                  year: "2012", genre: "Rap", track: 0, art: "real"))
+        #expect(she.year == "2012")
+        #expect(she.genre == "Rap")
+        #expect(she.artist == "Tyler, The Creator")
+        #expect(she.artworkID == "real")
+        #expect(she.trackNumber == 4)
+
+        // Self-titled albums keep their artist.
+        let metallica = AlbumInfo(key: "m", releaseID: "r", artist: "Metallica",
+                                  tracks: [.init(disc: 1, number: 1, title: "Enter Sandman", artist: "Metallica")])
+        let sandman = AlbumLookup.apply(metallica, to: albumSong("m", "Enter Sandman", artist: "Metallica", album: "Metallica"),
+                                        album: "Metallica", coverID: nil, defaultArtworkID: nil)
+        #expect(sandman.artist == "Metallica")
+    }
+
+    @Test func albumGroupsSkipCompleteAlbums() {
+        let songs = [
+            albumSong("1", "Yonkers", artist: "Tyler, The Creator", track: 2),
+            albumSong("2", "Analog", artist: "Goblin", track: 11),
+            albumSong("3", "Done", artist: "X", album: "Complete", year: "2020", genre: "Pop", track: 1),
+            albumSong("4", "Loose", artist: "Y", album: "No Album"),
+        ]
+        let groups = AlbumLookup.groups(in: songs, defaultArtworkID: "default")
+        #expect(groups.map(\.album) == ["Goblin"])
+        #expect(groups.first?.artist == "Tyler, The Creator")   // not "Goblin"
+        #expect(groups.first?.needsCover == false)
+    }
+
+    @Test func albumInfoIsSavedInDatabase() throws {
+        let db = try LibraryDatabase(dbQueue: DatabaseQueue())
+        let info = AlbumInfo(key: "k", releaseID: "r", year: "2011",
+                             tracks: [.init(disc: 1, number: 1, title: "T", artist: "A")], hasCover: true)
+        db.saveAlbumInfo(info)
+        db.saveAlbumInfo(AlbumInfo(key: "missing"))
+        let saved = try #require(db.albumInfo(key: "k"))
+        #expect(saved.tracks == info.tracks)
+        #expect(saved.year == "2011")
+        #expect(db.albumInfo(key: "missing")?.found == false)
+        #expect(db.albumInfo(key: "nope") == nil)
+    }
 }

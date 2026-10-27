@@ -129,6 +129,23 @@ final class LibraryDatabase {
         migrator.registerMigration("v3-clean-titles", migrate: cleanStoredTitles)
         migrator.registerMigration("v4-clean-titles-punctuation", migrate: cleanStoredTitles)
 
+        // Album details from MusicBrainz (year, genre, track list), one row per album.
+        // Albums that weren't found are kept too, so they aren't searched again every launch.
+        migrator.registerMigration("v5-album-info") { db in
+            try db.create(table: "albumInfo") { t in
+                t.primaryKey("key", .text)                 // AlbumLookup.key(album:artist:)
+                t.column("releaseID", .text)               // nil = not found
+                t.column("releaseGroupID", .text)
+                t.column("title", .text)
+                t.column("artist", .text)
+                t.column("year", .text)
+                t.column("genre", .text)
+                t.column("tracks", .text).notNull()        // JSON
+                t.column("hasCover", .boolean).notNull()
+                t.column("checkedAt", .datetime).notNull()
+            }
+        }
+
         return migrator
     }
 
@@ -344,6 +361,21 @@ final class LibraryDatabase {
         return SongRecord(song: song, folderID: match?.key, relativePath: relative)
     }
 
+    // MARK: - Album details
+
+    /// Blocking; call off the main thread.
+    func albumInfo(key: String) -> AlbumInfo? {
+        readAfterWrites("albumInfo") { db in
+            try AlbumInfo.fetchOne(db, key: key).map { [$0] } ?? []
+        }.first
+    }
+
+    func saveAlbumInfo(_ info: AlbumInfo) {
+        writeQueue.async { [self] in
+            write("saveAlbumInfo") { db in try info.save(db) }
+        }
+    }
+
     // MARK: - Playlists
 
     func fetchPlaylists() -> [Playlist] {
@@ -446,4 +478,8 @@ final class LibraryDatabase {
             print("❌ LibraryDatabase.\(label):", error)
         }
     }
+}
+
+extension AlbumInfo: FetchableRecord, PersistableRecord {
+    static let databaseTableName = "albumInfo"
 }

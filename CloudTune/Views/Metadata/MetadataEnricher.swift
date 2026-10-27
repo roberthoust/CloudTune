@@ -75,7 +75,7 @@ import OSLog
 
 // MARK: - Config
 
-private enum EnricherConfig {
+enum EnricherConfig {
     static let musicBrainzUserAgent = "CloudTune/1.0 (contact: support@cloudtune.app)"
     static let musicBrainzBase = "https://musicbrainz.org/ws/2"
     static let coverArtBase = "https://coverartarchive.org"
@@ -122,7 +122,7 @@ private let mbLimiter = RateLimiter(minInterval: EnricherConfig.musicBrainzRateL
 
 // MARK: - HTTP helpers (timeouts, retries, polite headers)
 
-private struct HTTP {
+struct HTTP {
     static func getData(url: URL,
                         headers: [String:String] = [:],
                         cacheKey: String? = nil,

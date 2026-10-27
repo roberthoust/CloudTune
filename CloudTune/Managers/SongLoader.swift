@@ -120,6 +120,8 @@ class SongLoader {
     }
     /// Encoded once — re-encoding the PNG for every song was a noticeable cost on large imports.
     private static let defaultCoverData: Data? = UIImage(named: "DefaultCover")?.pngData()
+    /// Artwork ID of the placeholder cover given to songs that have no art of their own.
+    static let defaultCoverArtworkID: String? = defaultCoverData.map { ArtworkStore.shared.save($0) }
 
     /// Extract AVMetadata and fallback fields from a file.
     private static func extractMetadata(from fileURL: URL) -> Song {

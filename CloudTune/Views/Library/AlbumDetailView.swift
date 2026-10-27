@@ -162,7 +162,9 @@ struct AlbumDetailView: View {
             }
         case .track:
             return input.sorted { lhs, rhs in
-                if lhs.discNumber != rhs.discNumber { return lhs.discNumber < rhs.discNumber }
+                // No disc tag (0) means disc 1, so untagged songs don't jump ahead of disc 1.
+                let d1 = max(lhs.discNumber, 1), d2 = max(rhs.discNumber, 1)
+                if d1 != d2 { return d1 < d2 }
                 if lhs.trackNumber != rhs.trackNumber { return lhs.trackNumber < rhs.trackNumber }
                 return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             }
