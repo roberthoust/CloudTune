@@ -75,12 +75,7 @@ class PlaylistViewModel: ObservableObject {
     }
 
     func savePlaylists() {
-        do {
-            let data = try JSONEncoder().encode(playlists)
-            try data.write(to: playlistsFile)
-        } catch {
-            print("❌ Error saving playlists:", error)
-        }
+        LibraryDatabase.shared.replacePlaylists(playlists)
     }
 
     func scheduleSavePlaylists(debounce: TimeInterval = 0.3) {
@@ -97,35 +92,16 @@ class PlaylistViewModel: ObservableObject {
 
     func loadPlaylists() {
         ioQueue.async {
-            // If file doesn't exist yet → just publish empty playlists
-            guard FileManager.default.fileExists(atPath: self.playlistsFile.path) else {
-                DispatchQueue.main.async {
-                    self.playlists = []
-                    print("ℹ️ No playlists file yet — starting fresh.")
-                }
-                return
-            }
+            // The library loader imports the old playlists.json into the database on first
+            // launch; make sure that has happened before reading.
+            let db = LibraryDatabase.shared
+            db.importLegacyJSONIfNeeded(libraryURL: FilePersistence.libraryURL,
+                                        playlistsURL: self.playlistsFile,
+                                        bookmarkKeys: BookmarkStore.shared.allKeys)
+            let loadedPlaylists = db.fetchPlaylists()
 
-            do {
-                let data = try Data(contentsOf: self.playlistsFile)
-                let loadedPlaylists = try JSONDecoder().decode([Playlist].self, from: data)
-
-                DispatchQueue.main.async {
-                    self.playlists = loadedPlaylists
-
-                    for playlist in loadedPlaylists {
-                        if let filename = playlist.coverArtFilename {
-                            let fullPath = Self.getCoversDirectory().appendingPathComponent(filename)
-                            print("🖼 Cover image exists for \(playlist.name):",
-                                  FileManager.default.fileExists(atPath: fullPath.path))
-                        }
-                    }
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.playlists = []
-                }
-                print("❌ Failed to decode playlists.json:", error)
+            DispatchQueue.main.async {
+                self.playlists = loadedPlaylists
             }
         }
     }

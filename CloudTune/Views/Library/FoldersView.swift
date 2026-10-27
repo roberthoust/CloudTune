@@ -8,81 +8,16 @@
 import SwiftUI
 import UIKit
 
-// MARK: - Lightweight folder thumb cache (unique names to avoid redeclare)
-final class FolderThumbCache: NSCache<NSString, UIImage> {
-    static let shared = FolderThumbCache()
-    private override init() {
-        super.init()
-        name = "FolderThumbCache"
-        countLimit = 400
-        totalCostLimit = 20 * 1024 * 1024
-    }
-}
-
-fileprivate func folderImageCost(_ image: UIImage) -> Int {
-    if let cg = image.cgImage { return cg.bytesPerRow * cg.height }
-    let px = Int(image.size.width * image.scale) * Int(image.size.height * image.scale)
-    return px * 4
-}
-
-fileprivate func folderCacheKey(for data: Data) -> NSString {
-    NSString(string: data.prefix(32).base64EncodedString())
-}
-
-fileprivate func makeFolderThumbnail(from data: Data, side: CGFloat, scale: CGFloat) -> UIImage? {
-    guard let full = UIImage(data: data) else { return nil }
-    let target = CGSize(width: side * scale, height: side * scale)
-    let format = UIGraphicsImageRendererFormat.default()
-    format.scale = 1
-    let renderer = UIGraphicsImageRenderer(size: target, format: format)
-    return renderer.image { _ in full.draw(in: CGRect(origin: .zero, size: target)) }
-}
-
-// MARK: - Artwork view (off-main decode, cached)
-@MainActor
+// MARK: - Artwork view
 private struct FolderArtwork: View {
-    let artworkData: Data?
+    let artworkID: String?
     let side: CGFloat
 
-    @State private var image: UIImage?
-
     var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                Image("DefaultCover")
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .redacted(reason: .placeholder)
-                    .task { await decodeIfNeeded() }
-            }
-        }
-        .frame(width: side, height: side)
-        .cornerRadius(side * 0.1)
-        .clipped()
-    }
-
-    private func decodeIfNeeded() async {
-        guard let data = artworkData else { return }
-        let key = folderCacheKey(for: data)
-        if let cached = FolderThumbCache.shared.object(forKey: key) {
-            image = cached
-            return
-        }
-
-        let sideCopy = side
-        let scale = UIScreen.main.scale
-        let thumb = await Task.detached(priority: .utility) {
-            makeFolderThumbnail(from: data, side: sideCopy, scale: scale)
-        }.value
-
-        if let thumb {
-            FolderThumbCache.shared.setObject(thumb, forKey: key, cost: folderImageCost(thumb))
-            image = thumb
-        }
+        ArtworkThumbView(artworkID: artworkID)
+            .frame(width: side, height: side)
+            .cornerRadius(side * 0.1)
+            .clipped()
     }
 }
 
@@ -144,12 +79,12 @@ struct FoldersView: View {
     @ViewBuilder
     private var folderItems: some View {
         ForEach(groups, id: \.folder) { group in
-            let firstArtwork = group.songs.first?.artwork
+            let firstArtwork = group.songs.first?.artworkID
 
             NavigationLink(destination: FolderDetailView(folder: group.folder, songs: group.songs)) {
                 if isGridView {
                     VStack(spacing: 10) {
-                        FolderArtwork(artworkData: firstArtwork, side: 140)
+                        FolderArtwork(artworkID: firstArtwork, side: 140)
 
                         Text(group.folder.lastPathComponent)
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
@@ -163,7 +98,7 @@ struct FoldersView: View {
                     .contentShape(Rectangle())
                 } else {
                     HStack {
-                        FolderArtwork(artworkData: firstArtwork, side: 70)
+                        FolderArtwork(artworkID: firstArtwork, side: 70)
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text(group.folder.lastPathComponent)

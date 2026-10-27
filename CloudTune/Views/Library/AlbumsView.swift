@@ -9,94 +9,15 @@ import SwiftUI
 import Combine
 import UIKit
 
-// Lightweight shared thumbnail cache (LRU via NSCache)
-final class ImageThumbCache: NSCache<NSString, UIImage> {
-    static let shared = ImageThumbCache()
-    private override init() {
-        super.init()
-        name = "ImageThumbCache"
-        // Tune to your app; these are conservative defaults.
-        countLimit = 600                 // max number of thumbnails
-        totalCostLimit = 24 * 1024 * 1024 // ~24 MB budget
-    }
-}
-
-fileprivate func imageCost(_ image: UIImage) -> Int {
-    if let cg = image.cgImage {
-        return cg.bytesPerRow * cg.height // rough byte size
-    }
-    // Fallback estimate (RGBA)
-    let px = Int(image.size.width * image.scale) * Int(image.size.height * image.scale)
-    return px * 4
-}
-
-// Free helpers so they are NOT MainActor-isolated and can run off the main thread
-fileprivate func albumCacheKey(for data: Data) -> NSString {
-    // Use first 32 bytes as a cheap pseudo-hash key; good enough for thumbnail caching.
-    let prefix = data.prefix(32)
-    return NSString(string: prefix.base64EncodedString())
-}
-
-fileprivate func makeAlbumThumbnail(from data: Data, side: CGFloat, scale: CGFloat) -> UIImage? {
-    guard let full = UIImage(data: data) else { return nil }
-    let target = CGSize(width: side * scale, height: side * scale)
-    let format = UIGraphicsImageRendererFormat.default()
-    format.scale = 1
-    let renderer = UIGraphicsImageRenderer(size: target, format: format)
-    let img = renderer.image { _ in
-        full.draw(in: CGRect(origin: .zero, size: target))
-    }
-    return img
-}
-
-@MainActor
 private struct AlbumArtwork: View {
-    let data: Data?
+    let artworkID: String?
     let side: CGFloat
 
-    @State private var image: UIImage?
-
     var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                Image("DefaultCover")
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .redacted(reason: .placeholder)
-                    .task { await decodeIfNeeded() }
-            }
-        }
-        .frame(width: side, height: side)
-        .cornerRadius(side * 0.1)
-        .clipped()
-    }
-
-    private func decodeIfNeeded() async {
-        guard let data else { return }
-
-        // Compute cache key and grab cached image on the main actor first.
-        let key = albumCacheKey(for: data)
-        if let cached = ImageThumbCache.shared.object(forKey: key) {
-            self.image = cached
-            return
-        }
-
-        // Capture simple values, then generate thumbnail off the main thread.
-        let sideCopy = side
-        let scale = UIScreen.main.scale
-
-        let thumb = await Task.detached(priority: .utility) {
-            makeAlbumThumbnail(from: data, side: sideCopy, scale: scale)
-        }.value
-
-        if let thumb {
-            ImageThumbCache.shared.setObject(thumb, forKey: key, cost: imageCost(thumb))
-            self.image = thumb
-        }
+        ArtworkThumbView(artworkID: artworkID)
+            .frame(width: side, height: side)
+            .cornerRadius(side * 0.1)
+            .clipped()
     }
 }
 
@@ -161,7 +82,7 @@ struct AlbumsView: View {
             NavigationLink(destination: AlbumDetailView(albumName: albumGroup.album, songs: albumGroup.songs)) {
                 if isGridView {
                     VStack(spacing: 10) {
-                        AlbumArtwork(data: firstSong?.artwork, side: 140)
+                        AlbumArtwork(artworkID: firstSong?.artworkID, side: 140)
 
                         Text(metadata?.album ?? albumGroup.album)
                             .font(.system(size: 14, weight: .semibold, design: .rounded))
@@ -175,7 +96,7 @@ struct AlbumsView: View {
                     .contentShape(Rectangle())
                 } else {
                     HStack {
-                        AlbumArtwork(data: firstSong?.artwork, side: 70)
+                        AlbumArtwork(artworkID: firstSong?.artworkID, side: 70)
 
                         Text(metadata?.album ?? albumGroup.album)
                             .font(.system(size: 16, weight: .semibold, design: .rounded))
