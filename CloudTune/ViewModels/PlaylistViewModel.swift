@@ -21,46 +21,35 @@ class PlaylistViewModel: ObservableObject {
         loadPlaylists()
     }
 
-    func createPlaylist(name: String, songIDs: [String], coverArtFilename: String? = nil) {
-        let newPlaylist = Playlist(name: name, coverArtFilename: coverArtFilename, songIDs: songIDs)
-        playlists.append(newPlaylist)
-        scheduleSavePlaylists()
-    }
-
-    func addPlaylist(_ playlist: Playlist) {
+    /// Adds a new playlist; the cover (if any) is saved in the background.
+    @discardableResult
+    func createPlaylist(name: String, songIDs: [String], cover: UIImage? = nil) -> Playlist {
+        let playlist = Playlist(name: name, songIDs: songIDs)
         playlists.append(playlist)
         scheduleSavePlaylists()
+        if let cover { updatePlaylist(playlist, withNewImage: cover) }
+        return playlist
     }
 
+    /// Saves changes to a playlist. A new cover is written in the background and then
+    /// applied to whatever the playlist looks like by then (so later edits aren't overwritten).
     func updatePlaylist(_ updated: Playlist, withNewImage image: UIImage? = nil) {
-        if let index = playlists.firstIndex(where: { $0.id == updated.id }) {
-            var updatedPlaylist = updated
+        guard let index = playlists.firstIndex(where: { $0.id == updated.id }) else { return }
+        playlists[index] = updated
+        scheduleSavePlaylists()
 
-            if let image = image {
-                ioQueue.async {
-                    let newFilename = self.safeFilename(for: updated.name)
-
-                    if let oldFilename = updated.coverArtFilename, oldFilename != newFilename {
-                        let oldPath = Self.getCoversDirectory().appendingPathComponent(oldFilename)
-                        try? FileManager.default.removeItem(at: oldPath)
-                    }
-
-                    if let saved = self.saveCoverImage(image: image, as: newFilename) {
-                        DispatchQueue.main.async {
-                            updatedPlaylist.coverArtFilename = saved
-                            self.playlists[index] = updatedPlaylist
-                            self.scheduleSavePlaylists()
-                        }
-                    } else {
-                        DispatchQueue.main.async {
-                            self.playlists[index] = updatedPlaylist
-                            self.scheduleSavePlaylists()
-                        }
-                    }
-                }
-            } else {
-                playlists[index] = updatedPlaylist
-                scheduleSavePlaylists()
+        guard let image else { return }
+        let id = updated.id
+        let oldFilename = updated.coverArtFilename
+        ioQueue.async {
+            guard let saved = self.saveCoverImage(image: image, as: Self.coverFilename(for: id)) else { return }
+            if let oldFilename, oldFilename != saved {
+                try? FileManager.default.removeItem(at: Self.getCoversDirectory().appendingPathComponent(oldFilename))
+            }
+            DispatchQueue.main.async {
+                guard let i = self.playlists.firstIndex(where: { $0.id == id }) else { return }
+                self.playlists[i].coverArtFilename = saved
+                self.scheduleSavePlaylists()
             }
         }
     }
@@ -108,17 +97,9 @@ class PlaylistViewModel: ObservableObject {
 
     // MARK: - Image Helpers
 
-    func safeFilename(for name: String) -> String {
-        let clean = name
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .joined(separator: "_")
-        return "playlist_\(clean).jpg"
-    }
-
-    func saveCoverImage(image: UIImage, for name: String) -> String? {
-        let filename = safeFilename(for: name)
-        return saveCoverImage(image: image, as: filename)
+    /// One cover file per playlist, named by ID (names can repeat and change).
+    static func coverFilename(for playlistID: String) -> String {
+        "playlist_\(playlistID).jpg"
     }
 
     func saveCoverImage(image: UIImage, as filename: String) -> String? {
@@ -127,6 +108,7 @@ class PlaylistViewModel: ObservableObject {
         let path = Self.getCoversDirectory().appendingPathComponent(filename)
         do {
             try data.write(to: path)
+            PlaylistCovers.shared.invalidate(filename)
             return filename
         } catch {
             print("❌ Failed to save cover image:", error)

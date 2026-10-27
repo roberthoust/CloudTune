@@ -59,14 +59,8 @@ actor SongMetadataManager {
 
     /// Enrich a single song's metadata
     func enrichMetadata(for song: Song) async -> SongMetadata {
-        var cleanedTitle = song.title
-
-        // Clean titles with track numbers, underscores, etc.
-        if let range = cleanedTitle.range(of: #"^\d+[-_. ]*"#, options: .regularExpression) {
-            cleanedTitle.removeSubrange(range)
-        }
-
-        let trimmedTitle = cleanedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Drop leading track numbers / "Artist - " (keeps titles like "7 Rings" intact)
+        let trimmedTitle = SongTitle.cleaned(song.title, artist: song.artist, trackNumber: song.trackNumber)
 
         let enriched = SongMetadata(
             title: trimmedTitle.isEmpty ? song.title : trimmedTitle,

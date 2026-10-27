@@ -110,6 +110,7 @@ final class LibraryViewModel: ObservableObject {
             ArtworkThumbnails.shared.prewarm(stored.compactMap(\.artworkID))
             scheduleRebuildAlbumBuckets()
             _ = await pruneMissingFiles(updateDisk: false)
+            startAlbumLookups()
         } else {
             // 4) Nothing stored yet: scan the restored folders.
             var loaded: [Song] = []
@@ -124,6 +125,7 @@ final class LibraryViewModel: ObservableObject {
             scheduleRebuildAlbumBuckets()
             db.saveSongs(loaded)
             for l in lookups { startOnlineLookups(l.items, in: l.folder) }
+            startAlbumLookups()
         }
     }
 
@@ -139,6 +141,13 @@ final class LibraryViewModel: ObservableObject {
         let db = self.db
         let ids = await Task.detached(priority: .userInitiated) { db.searchSongIDs(query) }.value
         return songs(forIDs: ids, appendingMissing: false)
+    }
+
+    /// For song pickers (playlists): everything A–Z when the query is empty, otherwise search results.
+    func pickerSongs(matching query: String) async -> [Song] {
+        query.trimmingCharacters(in: .whitespaces).isEmpty
+            ? await songs(sortedBy: .title)
+            : await searchSongs(query)
     }
 
     /// Maps database IDs to the songs in memory (skipping ones pruned this session).
@@ -192,7 +201,7 @@ final class LibraryViewModel: ObservableObject {
     /// Slow, online part of import. Runs one song at a time (MusicBrainz allows ~1 request/sec)
     /// and updates each song in the library as its result arrives.
     private func startOnlineLookups(_ items: [OnlineLookup], in folderURL: URL) {
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty else { startAlbumLookups(); return }
         Task { [weak self] in
             var found: [Song] = []
             for item in items {
@@ -203,7 +212,82 @@ final class LibraryViewModel: ObservableObject {
                 self.applyLookup(cleaned)
             }
             self?.refreshAlbumName(for: folderURL, using: found)
+            self?.startAlbumLookups()
         }
+    }
+
+    // MARK: - Album details (year, genre, cover, track numbers, album-name-as-artist tags)
+
+    private var albumLookupTask: Task<Void, Never>?
+    private var albumLookupRequested = false
+
+    /// Looks up albums that are missing details, one at a time in the background.
+    /// Safe to call often: if a pass is running, one more pass runs after it.
+    func startAlbumLookups() {
+        guard albumLookupTask == nil else { albumLookupRequested = true; return }
+        albumLookupTask = Task { [weak self] in
+            await self?.runAlbumLookups()
+            guard let self else { return }
+            self.albumLookupTask = nil
+            if self.albumLookupRequested {
+                self.albumLookupRequested = false
+                self.startAlbumLookups()
+            }
+        }
+    }
+
+    private func runAlbumLookups() async {
+        let db = self.db
+        let defaultID = SongLoader.defaultCoverArtworkID
+        for group in AlbumLookup.groups(in: songs, defaultArtworkID: defaultID) {
+            if Task.isCancelled { return }
+            let key = AlbumLookup.key(album: group.album, artist: group.artist)
+
+            // Use the saved result when there is one; search again only for albums
+            // not found last time, and only once they're old enough to retry.
+            var info = await Task.detached { db.albumInfo(key: key) }.value
+            if info == nil || (!info!.found && Date().timeIntervalSince(info!.checkedAt) > AlbumLookup.retryNotFoundAfter) {
+                guard let fresh = await AlbumLookup.lookUp(album: group.album, artist: group.artist,
+                                                           songCount: group.songIDs.count) else {
+                    print("💿 Album lookup failed (will retry later): \(group.album)")
+                    continue
+                }
+                db.saveAlbumInfo(fresh)
+                info = fresh
+                print(fresh.found
+                      ? "💿 Album found: \(group.album) → \(fresh.title ?? "?") (\(fresh.year ?? "no year"), \(fresh.genre ?? "no genre"))"
+                      : "💿 Album not found: \(group.album) — \(group.artist)")
+            }
+            guard let info, info.found else { continue }
+
+            var coverID: String?
+            if group.needsCover, let data = await AlbumLookup.coverArt(for: info) {
+                coverID = await Task.detached { ArtworkStore.shared.save(data) }.value
+            }
+            applyAlbumInfo(info, coverID: coverID, to: group)
+        }
+    }
+
+    private func applyAlbumInfo(_ info: AlbumInfo, coverID: String?, to group: AlbumLookup.Group) {
+        let ids = Set(group.songIDs)
+        var updated = songs
+        var changed: [Song] = []
+        for i in updated.indices where ids.contains(updated[i].id) {
+            let filled = AlbumLookup.apply(info, to: updated[i], album: group.album,
+                                           coverID: coverID, defaultArtworkID: SongLoader.defaultCoverArtworkID)
+            if filled != updated[i] {
+                updated[i] = filled
+                changed.append(filled)
+            }
+        }
+        guard !changed.isEmpty else { return }
+
+        songs = updated   // one update for the whole album
+        for s in changed { songMetadataCache.removeValue(forKey: s.id) }  // rows read the song itself again
+        db.saveSongs(changed)
+        if let coverID { ArtworkThumbnails.shared.prewarm([coverID]) }
+        scheduleRebuildAlbumBuckets()
+        print("💿 Album details applied: \(group.album) — \(changed.count) song\(changed.count == 1 ? "" : "s") updated")
     }
 
     /// Swap in an improved song, keeping its current album so album groups don't flicker mid-import.

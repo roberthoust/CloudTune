@@ -2,7 +2,16 @@ import SwiftUI
 import UIKit
 
 struct PlaylistDetailView: View {
-    let playlist: Playlist
+    private let initialPlaylist: Playlist
+
+    init(playlist: Playlist) {
+        initialPlaylist = playlist
+    }
+
+    /// The current version of this playlist, so edits show up here right after saving.
+    private var playlist: Playlist {
+        playlistVM.playlists.first { $0.id == initialPlaylist.id } ?? initialPlaylist
+    }
 
     @EnvironmentObject var libraryVM: LibraryViewModel
     @EnvironmentObject var playbackVM: PlaybackViewModel
@@ -31,12 +40,12 @@ struct PlaylistDetailView: View {
             }
         }
         .sheet(isPresented: $showEditSheet) {
-            PlaylistEditView(playlist: playlist)
+            PlaylistEditorView(playlist: playlist)
                 .environmentObject(playlistVM)
                 .environmentObject(libraryVM)
         }
         .onAppear(perform: loadPlaylistSongs)
-        .onChange(of: libraryVM.songs) { _ in loadPlaylistSongs() }
+        .onChange(of: libraryVM.songsVersion) { _ in loadPlaylistSongs() }
         .onChange(of: playlist.songIDs) { _ in loadPlaylistSongs() }
     }
 
@@ -152,34 +161,15 @@ struct PlaylistDetailView: View {
                         .fill(Color(.secondarySystemBackground))
                 )
 
-            if let filename = playlist.coverArtFilename,
-               let ui = loadCoverImage(filename: filename) {
-                Image(uiImage: ui)
-                    .resizable()
-                    .scaledToFill()
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .padding(4)
-            } else {
-                Image("DefaultCover")
-                    .resizable()
-                    .scaledToFill()
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .padding(4)
-            }
+            PlaylistCoverImageView(playlist: playlist, side: side - 8)
         }
     }
 
     // MARK: - Data
 
-    private func loadCoverImage(filename: String) -> UIImage? {
-        let path = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            .appendingPathComponent(filename)
-        return UIImage(contentsOfFile: path.path)
-    }
-
     private func loadPlaylistSongs() {
         // Fast map lookup to avoid O(n^2)
-        let map = Dictionary(uniqueKeysWithValues: libraryVM.songs.map { ($0.id, $0) })
+        let map = Dictionary(libraryVM.songs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         matchedSongs = playlist.songIDs.compactMap { map[$0] }
     }
 }

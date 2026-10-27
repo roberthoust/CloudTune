@@ -124,7 +124,42 @@ final class LibraryDatabase {
             }
         }
 
+        // Clean up titles imported before SongTitle existed ("04 21 Savage - Bad Guy" → "Bad Guy").
+        // v4 runs it again after the artist match learned to ignore punctuation ("Tyler The Creator -- …").
+        migrator.registerMigration("v3-clean-titles", migrate: cleanStoredTitles)
+        migrator.registerMigration("v4-clean-titles-punctuation", migrate: cleanStoredTitles)
+
+        // Album details from MusicBrainz (year, genre, track list), one row per album.
+        // Albums that weren't found are kept too, so they aren't searched again every launch.
+        migrator.registerMigration("v5-album-info") { db in
+            try db.create(table: "albumInfo") { t in
+                t.primaryKey("key", .text)                 // AlbumLookup.key(album:artist:)
+                t.column("releaseID", .text)               // nil = not found
+                t.column("releaseGroupID", .text)
+                t.column("title", .text)
+                t.column("artist", .text)
+                t.column("year", .text)
+                t.column("genre", .text)
+                t.column("tracks", .text).notNull()        // JSON
+                t.column("hasCover", .boolean).notNull()
+                t.column("checkedAt", .datetime).notNull()
+            }
+        }
+
         return migrator
+    }
+
+    private static func cleanStoredTitles(_ db: Database) throws {
+        let rows = try Row.fetchAll(db, sql: "SELECT id, title, artist, album, trackNumber FROM song")
+        for row in rows {
+            let title: String = row["title"], artist: String = row["artist"], album: String = row["album"]
+            let cleaned = SongTitle.cleaned(title, artist: artist, trackNumber: row["trackNumber"])
+            guard cleaned != title else { continue }
+            try db.execute(sql: "UPDATE song SET title = ?, titleSort = ?, searchText = ? WHERE id = ?",
+                           arguments: [cleaned, SongSortKey.sortKey(cleaned),
+                                       SongSortKey.searchText(title: cleaned, artist: artist, album: album),
+                                       row["id"] as String])
+        }
     }
 
     // MARK: - Records
@@ -326,6 +361,21 @@ final class LibraryDatabase {
         return SongRecord(song: song, folderID: match?.key, relativePath: relative)
     }
 
+    // MARK: - Album details
+
+    /// Blocking; call off the main thread.
+    func albumInfo(key: String) -> AlbumInfo? {
+        readAfterWrites("albumInfo") { db in
+            try AlbumInfo.fetchOne(db, key: key).map { [$0] } ?? []
+        }.first
+    }
+
+    func saveAlbumInfo(_ info: AlbumInfo) {
+        writeQueue.async { [self] in
+            write("saveAlbumInfo") { db in try info.save(db) }
+        }
+    }
+
     // MARK: - Playlists
 
     func fetchPlaylists() -> [Playlist] {
@@ -428,4 +478,8 @@ final class LibraryDatabase {
             print("❌ LibraryDatabase.\(label):", error)
         }
     }
+}
+
+extension AlbumInfo: FetchableRecord, PersistableRecord {
+    static let databaseTableName = "albumInfo"
 }

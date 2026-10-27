@@ -75,7 +75,7 @@ import OSLog
 
 // MARK: - Config
 
-private enum EnricherConfig {
+enum EnricherConfig {
     static let musicBrainzUserAgent = "CloudTune/1.0 (contact: support@cloudtune.app)"
     static let musicBrainzBase = "https://musicbrainz.org/ws/2"
     static let coverArtBase = "https://coverartarchive.org"
@@ -122,7 +122,7 @@ private let mbLimiter = RateLimiter(minInterval: EnricherConfig.musicBrainzRateL
 
 // MARK: - HTTP helpers (timeouts, retries, polite headers)
 
-private struct HTTP {
+struct HTTP {
     static func getData(url: URL,
                         headers: [String:String] = [:],
                         cacheKey: String? = nil,
@@ -652,6 +652,10 @@ final class MetadataEnricher {
            let a = parsed.artist, !a.trimmingCharacters(in: .whitespaces).isEmpty {
             working.artist = a
         }
+
+        // STEP 2c — TITLE CLEANUP
+        // Drop leading track numbers and "Artist - " now that the artist is settled.
+        working.title = SongTitle.cleaned(working.title, artist: working.artist, trackNumber: working.trackNumber)
 
         log.debug("Cleaned → title='\(working.title, privacy: .public)' artist='\(working.artist, privacy: .public)' album='\(working.album, privacy: .public)'")
         return working
