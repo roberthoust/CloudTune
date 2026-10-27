@@ -181,14 +181,28 @@ struct PlayerView: View {
 
     enum ActiveSheet: Identifiable {
         case eq
+        case speedPitch
         case addToPlaylist(Song)
-        var id: Int { switch self { case .eq: 0; case .addToPlaylist(let s): s.id.hashValue } }
+
+        var id: Int {
+            switch self {
+            case .eq: return 0
+            case .speedPitch: return 1
+            case .addToPlaylist(let s): return s.id.hashValue
+            }
+        }
     }
 
     // Full-screen covers: we split the binding so only one is active at a time
     private var eqSheetBinding: Binding<ActiveSheet?> {
         .init(
             get: { if case .eq = activeSheet { return activeSheet } else { return nil } },
+            set: { if $0 == nil { activeSheet = nil } }
+        )
+    }
+    private var speedPitchSheetBinding: Binding<ActiveSheet?> {
+        .init(
+            get: { if case .speedPitch = activeSheet { return activeSheet } else { return nil } },
             set: { if $0 == nil { activeSheet = nil } }
         )
     }
@@ -230,12 +244,22 @@ struct PlayerView: View {
 
             transport
 
-            Button(action: { activeSheet = .eq }) {
-                // Uppercased once per render (cheap), you can also store in VM if you prefer
-                Text("EQ: \(EQManager.shared.activePresetName.uppercased())")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-                    .padding(.top, -8)
+            HStack(spacing: 12) {
+                Button(action: { activeSheet = .eq }) {
+                    // Uppercased once per render (cheap), you can also store in VM if you prefer
+                    Text("EQ: \(EQManager.shared.activePresetName.uppercased())")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                        .padding(.top, -8)
+                }
+
+                Button(action: { activeSheet = .speedPitch }) {
+                    let mode = playbackVM.linkSpeedToPitch ? "TAPE" : "SPEED"
+                    Text(String(format: "\(mode): %.2fx", playbackVM.playbackRate))
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                        .padding(.top, -8)
+                }
             }
 
             controlsRow
@@ -257,6 +281,17 @@ struct PlayerView: View {
             EQSettingsView()
                 .ignoresSafeArea(.keyboard)
                 .background(Color(.systemBackground).ignoresSafeArea())
+        }
+        .fullScreenCover(item: speedPitchSheetBinding) { _ in
+            SpeedPitchSheet(
+                playbackRate: $playbackVM.playbackRate,
+                linkSpeedToPitch: $playbackVM.linkSpeedToPitch,
+                semitones: $playbackVM.semitones,
+                fineCents: $playbackVM.fineCents,
+                totalPitchCents: $playbackVM.pitchCents
+            )
+            .ignoresSafeArea(.keyboard)
+            .background(Color(.systemBackground).ignoresSafeArea())
         }
         .fullScreenCover(item: addToPlaylistSheetBinding) { sheet in
             if case .addToPlaylist(let song) = sheet {
@@ -354,5 +389,177 @@ struct PlayerView: View {
             }
         }
         .padding(.top, 4)
+    }
+}
+
+private struct SpeedPitchSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    @Binding var playbackRate: Float
+
+    /// When ON, speed drives pitch (tape behavior): pitchCents = 1200 * log2(rate)
+    @Binding var linkSpeedToPitch: Bool
+
+    // UI-friendly pitch controls (S/P Changer style)
+    @Binding var semitones: Int
+    @Binding var fineCents: Float
+
+    // Derived/combined pitch in cents (engine-facing)
+    // We accept it as a binding so the sheet can display it and reset it cleanly.
+    @Binding var totalPitchCents: Float
+
+    private let minRate: Float = 0.2
+    private let maxRate: Float = 5.0
+
+    private let minSemitones: Int = -24
+    private let maxSemitones: Int = 24
+
+    private let minFine: Float = -50
+    private let maxFine: Float = 50
+
+    // One-press steps (S/P Changer feel)
+    private let speedStep: Float = 0.05   // each tap adjusts speed by 0.05x
+    private let fineStep: Float = 10      // each tap adjusts fine pitch by 10 cents
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("Link Speed & Pitch", isOn: $linkSpeedToPitch)
+                } footer: {
+                    Text("When enabled, changing speed also changes pitch (tape / slowed behavior).")
+                }
+
+                Section("Speed") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(String(format: "%.2fx", playbackRate))
+                            .font(.headline)
+
+                        // One-press controls (no slider)
+                        HStack(spacing: 12) {
+                            Button("−") {
+                                playbackRate = clamp(playbackRate - speedStep, minRate, maxRate)
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Button("+") {
+                                playbackRate = clamp(playbackRate + speedStep, minRate, maxRate)
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Spacer()
+
+                            Button("1.00x") {
+                                playbackRate = 1.0
+                            }
+                            .buttonStyle(.bordered)
+                        }
+
+                        // Quick presets
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Presets")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+
+                            HStack {
+                                presetButton(0.75)
+                                presetButton(0.85)
+                                presetButton(1.0)
+                                presetButton(1.15)
+                            }
+                            HStack {
+                                presetButton(1.25)
+                                presetButton(1.5)
+                                presetButton(2.0)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Section("Pitch") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(String(format: "%+d st  %+0.0f cents   (Total: %+0.0f)", semitones, fineCents, totalPitchCents))
+                            .font(.headline)
+
+                        if linkSpeedToPitch {
+                            // In linked mode, pitch is derived from speed; show it as read-only.
+                            Text("Pitch is linked to speed. Disable Link to adjust pitch manually.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            HStack {
+                                Text("Semitones")
+                                Spacer()
+                                Stepper(value: $semitones, in: minSemitones...maxSemitones) {
+                                    Text(String(format: "%+d", semitones))
+                                        .monospacedDigit()
+                                }
+                            }
+
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Text("Fine")
+                                    Spacer()
+                                    Text(String(format: "%+0.0f", fineCents))
+                                        .monospacedDigit()
+                                        .foregroundColor(.secondary)
+                                }
+
+                                HStack(spacing: 12) {
+                                    Button("−") {
+                                        fineCents = clamp(fineCents - fineStep, minFine, maxFine)
+                                    }
+                                    .buttonStyle(.bordered)
+
+                                    Button("+") {
+                                        fineCents = clamp(fineCents + fineStep, minFine, maxFine)
+                                    }
+                                    .buttonStyle(.bordered)
+
+                                    Spacer()
+
+                                    Button("0") {
+                                        fineCents = 0
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+
+                            Text("Tip: ‘Slowed’ usually feels good around -2 to -6 semitones.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Section {
+                    Button("Reset", role: .destructive) {
+                        playbackRate = 1.0
+                        semitones = 0
+                        fineCents = 0
+                        totalPitchCents = 0
+                    }
+                }
+            }
+            .navigationTitle("Speed / Pitch")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func presetButton(_ value: Float) -> some View {
+        Button(String(format: "%.2g×", Double(value))) {
+            playbackRate = clamp(value, minRate, maxRate)
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private func clamp(_ v: Float, _ lo: Float, _ hi: Float) -> Float {
+        max(lo, min(v, hi))
     }
 }

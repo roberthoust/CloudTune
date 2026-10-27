@@ -31,7 +31,114 @@ class PlaybackViewModel: NSObject, ObservableObject {
     @Published var originalQueue: [Song] = []
     private var shuffledQueue: [Song] = []
     @Published var currentIndex: Int = -1
-    
+
+    // MARK: - Speed / Pitch
+
+    /// Playback speed multiplier. 1.0 = normal.
+    /// UI range: 0.2x (5x slower) ... 5.0x (5x faster)
+    @Published var playbackRate: Float = 1.0 {
+        didSet {
+            audio.setPlaybackRate(playbackRate)
+
+            // Optional: “tape” mode — changing speed also changes pitch.
+            if linkSpeedToPitch {
+                applyLinkedPitchFromRate()
+            }
+
+            updateNowPlayingPlaybackState()
+        }
+    }
+
+    /// When enabled, playbackRate drives pitch using the musical relationship:
+    /// pitchCents = 1200 * log2(rate)
+    /// Example: rate 0.5 → -1200 cents (−12 semitones)
+    @Published var linkSpeedToPitch: Bool = true {
+        didSet {
+            if linkSpeedToPitch {
+                applyLinkedPitchFromRate()
+            }
+        }
+    }
+
+    /// Coarse pitch control in musical semitones.
+    /// 1 semitone = 100 cents.
+    @Published var semitones: Int = 0 {
+        didSet {
+            // In linked mode, semitones are derived from speed (tape behavior).
+            guard !linkSpeedToPitch else { return }
+            guard !isUpdatingPitchUI else { return }
+            applyPitchFromUI()
+        }
+    }
+
+    /// Fine pitch adjustment in cents (usually a small window like -50...+50).
+    @Published var fineCents: Float = 0.0 {
+        didSet {
+            // In linked mode, fine cents are derived from speed (tape behavior).
+            guard !linkSpeedToPitch else { return }
+            guard !isUpdatingPitchUI else { return }
+            applyPitchFromUI()
+        }
+    }
+
+    /// Total pitch shift in cents. 0 = unchanged. (-1200 = -1 octave)
+    /// This is what the audio engine ultimately consumes.
+    @Published var pitchCents: Float = 0.0 {
+        didSet {
+            audio.setPitchCents(pitchCents)
+
+            // If something else sets pitchCents directly (restore, preset, etc.),
+            // keep semitones/fineCents in sync without creating feedback loops.
+            guard !isUpdatingPitchUI else { return }
+            syncPitchUIFromCents(pitchCents)
+        }
+    }
+
+    /// Prevent feedback loops when we derive pitchCents from semitones/fineCents
+    /// and when we derive semitones/fineCents from pitchCents.
+    private var isUpdatingPitchUI: Bool = false
+
+    /// Build `pitchCents` from the UI-friendly controls.
+    /// Example: semitones = -3, fineCents = -25 => pitchCents = -325
+    private func applyPitchFromUI() {
+        // Manual pitch is disabled when speed drives pitch.
+        guard !linkSpeedToPitch else { return }
+
+        isUpdatingPitchUI = true
+        pitchCents = Float(semitones) * 100 + fineCents
+        isUpdatingPitchUI = false
+    }
+
+    /// Derive `semitones` and `fineCents` from a cents value.
+    /// Uses truncation toward zero so `fineCents` stays within (-100, 100).
+    private func syncPitchUIFromCents(_ cents: Float) {
+        isUpdatingPitchUI = true
+        let st = Int(cents / 100) // truncates toward zero
+        let fine = cents - (Float(st) * 100)
+        semitones = st
+        fineCents = fine
+        isUpdatingPitchUI = false
+    }
+
+    /// Compute tape-style pitch shift (in cents) for a given playback rate.
+    /// pitchCents = 1200 * log2(rate)
+    private func linkedPitchCents(for rate: Float) -> Float {
+        let r = max(0.01, rate) // safety: log2 requires > 0
+        return Float(1200.0 * Foundation.log2(Double(r)))
+    }
+
+    /// Apply the tape-style pitch shift for the current playbackRate.
+    /// Updates pitchCents and keeps semitones/fineCents in sync.
+    private func applyLinkedPitchFromRate() {
+        let cents = linkedPitchCents(for: playbackRate)
+
+        // Avoid feedback loops with the pitch UI sync logic.
+        isUpdatingPitchUI = true
+        pitchCents = cents
+        syncPitchUIFromCents(cents)
+        isUpdatingPitchUI = false
+    }
+
     @Published var songToAddToPlaylist: Song?
     @Published var showAddToPlaylistSheet: Bool = false
     
@@ -94,42 +201,16 @@ class PlaybackViewModel: NSObject, ObservableObject {
         // Let the EQ UI control the engine's EQ node.
         EQManager.shared.attach(eq: audio.eq)
         
-        // AudioEngine configures AVAudioSession internally; we just react here.
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification,
-            object: AVAudioSession.sharedInstance(),
-            queue: .main
-        ) { [weak self] notification in
-            guard let self = self,
-                  let userInfo = notification.userInfo,
-                  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
-            
-            switch type {
-            case .began:
-                self.audio.pause()
-                self.isPlaying = false
-            case .ended:
-                do {
-                    try AVAudioSession.sharedInstance().setActive(true)
-                    self.audio.resume()
-                    self.isPlaying = true
-                } catch {
-                    print("❌ Failed to reactivate audio session after interruption: \(error)")
-                }
-            @unknown default:
-                break
-            }
+        // AudioEngine owns interruption / route-change handling (it knows the exact
+        // position to resume from); we just mirror the resulting play state.
+        audio.onSystemPlaybackChange = { [weak self] playing in
+            guard let self, self.currentSong != nil else { return }
+            self.isPlaying = playing
+            if playing { self.playbackStartTime = Date().timeIntervalSince1970 - self.currentTime }
+            self.updateNowPlayingElapsedTime()
+            self.updateNowPlayingPlaybackState()
         }
-        
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification,
-            object: nil,
-            queue: .main
-        ) { notification in
-            print("Audio session route change notification: \(notification)")
-        }
-        
+
         setupRemoteCommandCenter()
     }
     
@@ -203,6 +284,18 @@ class PlaybackViewModel: NSObject, ObservableObject {
         isPlaying = true
         playbackStartTime = Date().timeIntervalSince1970
         lastSeekAt = 0
+
+        // Apply current speed/pitch settings for this playback session.
+        // (Re-applying here ensures the engine matches UI after scheduling a new track.)
+        audio.setPlaybackRate(playbackRate)
+
+        // If speed is linked to pitch, ensure pitchCents reflects the current rate.
+        if linkSpeedToPitch {
+            applyLinkedPitchFromRate()
+        }
+
+        audio.setPitchCents(pitchCents)
+
         startTimer()
         if let s = currentSong { updateNowPlayingInfo(for: s) }
         
@@ -429,16 +522,18 @@ class PlaybackViewModel: NSObject, ObservableObject {
         let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         t.schedule(deadline: .now(), repeating: .milliseconds(500), leeway: .milliseconds(50))
         t.setEventHandler { [weak self] in
-            guard let self = self else { return }
-            let elapsed = Date().timeIntervalSince1970 - self.playbackStartTime
-            let clamped = min(elapsed, self.duration)
-            if abs(clamped - self.lastPushedTime) >= 0.25 {
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                // Prefer the engine's clock: it tracks the real file position at any playback
+                // rate and freezes while paused. Wall clock is only a fallback before audio starts.
+                let elapsed = self.audio.currentPlaybackSeconds()
+                    ?? (Date().timeIntervalSince1970 - self.playbackStartTime)
+                let clamped = max(0, min(elapsed, self.duration))
+                guard abs(clamped - self.lastPushedTime) >= 0.25 else { return }
                 self.lastPushedTime = clamped
-                DispatchQueue.main.async {
-                    self.currentTime = clamped
-                    self.updateNowPlayingElapsedTimeThrottled()
-                    self.updateNowPlayingPlaybackState()
-                }
+                self.currentTime = clamped
+                self.updateNowPlayingElapsedTimeThrottled()
+                self.updateNowPlayingPlaybackState()
             }
         }
         timerSrc = t
@@ -458,13 +553,13 @@ class PlaybackViewModel: NSObject, ObservableObject {
         let artist = song.artist
         let dur = duration
         let elapsed = currentTime
-        let rate = isPlaying ? 1.0 : 0.0
+        let rate = isPlaying ? Double(playbackRate) : 0.0
         let artHash = song.artwork?.hashValue ?? 0
-        
+
         let sig = NowPlayingSignature(title: title, artist: artist, duration: dur, elapsed: elapsed, rate: rate, artworkHash: artHash)
         if sig == lastNPSignature { return }
         lastNPSignature = sig
-        
+
         var nowPlayingInfo: [String: Any] = [
             MPMediaItemPropertyTitle: title,
             MPMediaItemPropertyArtist: artist,
@@ -472,17 +567,17 @@ class PlaybackViewModel: NSObject, ObservableObject {
             MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed,
             MPNowPlayingInfoPropertyPlaybackRate: rate
         ]
-        
+
         if let data = song.artwork, let image = UIImage(data: data) {
             let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
             nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
         }
-        
+
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }
     
     private func updateNowPlayingPlaybackState() {
-        let rate = isPlaying ? 1.0 : 0.0
+        let rate = isPlaying ? Double(playbackRate) : 0.0
         let elapsed = currentTime
         if rate == lastNPStateRate && elapsed == lastNPStateElapsed { return }
         lastNPStateRate = rate
