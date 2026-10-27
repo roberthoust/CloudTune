@@ -30,7 +30,7 @@ final class BookmarkStore {
     /// - standardizes & resolves symlinks
     /// - strips a leading "/private" (File Provider vs. local differences)
     /// - removes a trailing slash
-    private static func normalizePath(_ raw: String) -> String {
+    static func normalizePath(_ raw: String) -> String {
         var p = URL(fileURLWithPath: raw)
             .standardizedFileURL
             .resolvingSymlinksInPath()
@@ -129,6 +129,22 @@ final class BookmarkStore {
     func restoredFolderURLs() -> [URL] {
         Array(bookmarks.keys.compactMap { resolveFolderURL(fromStoredPath: $0) })
     }
+
+    /// Each bookmark's key (the folder's normalized path when it was added) and where it lives now.
+    /// The two differ after iOS moves the app's data folder (reinstall / update).
+    func restoredFolders() -> [String: URL] {
+        var result: [String: URL] = [:]
+        for key in bookmarks.keys {
+            if let url = resolveFolderURL(fromStoredPath: key) { result[key] = url }
+        }
+        return result
+    }
+
+    /// All bookmark keys, resolvable or not.
+    var allKeys: [String] { Array(bookmarks.keys) }
+
+    /// The key a folder is (or would be) stored under.
+    func key(forFolder folderURL: URL) -> String { Self.normalizePath(folderURL.path) }
 
     // MARK: - Access control
 

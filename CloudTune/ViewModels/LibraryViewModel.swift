@@ -14,14 +14,6 @@ final class LibraryViewModel: ObservableObject {
     // Precomputed album buckets for fast UI
     @Published private(set) var albumBuckets: [AlbumBucket] = []
 
-    // MARK: - Artwork thumbnail cache (memory + disk)
-    private let thumbMem = NSCache<NSString, UIImage>()
-    private let thumbIO = DispatchQueue(label: "ThumbIO", qos: .utility)
-    private lazy var thumbDiskURL: URL = {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        return caches.appendingPathComponent("thumbs", isDirectory: true)
-    }()
-
     struct AlbumBucket: Hashable, Identifiable {
         var id: String { album }
         let album: String
@@ -36,33 +28,12 @@ final class LibraryViewModel: ObservableObject {
 
     var allSongs: [Song] { songs }
 
-    // MARK: - Persistence debounce
+    // MARK: - Persistence
+    // Every change writes only the songs it touched (see LibraryDatabase); nothing rewrites the whole library.
+    private let db = LibraryDatabase.shared
     private let ioQueue = DispatchQueue(label: "LibraryIO", qos: .utility)
-    private var pendingSaveLibraryWork: DispatchWorkItem?
-    private var pendingSaveFoldersWork: DispatchWorkItem?
 
     private var pendingBucketsWork: DispatchWorkItem?
-
-    private func scheduleSaveLibrary(debounce seconds: TimeInterval = 0.6) {
-        pendingSaveLibraryWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let snapshot = self.songs
-            FilePersistence.saveLibrary(snapshot)
-        }
-        pendingSaveLibraryWork = work
-        ioQueue.asyncAfter(deadline: .now() + seconds, execute: work)
-    }
-    private func scheduleSaveFolderList(debounce seconds: TimeInterval = 0.8) {
-        pendingSaveFoldersWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let snapshot = self.savedFolders
-            FilePersistence.saveFolderList(snapshot)
-        }
-        pendingSaveFoldersWork = work
-        ioQueue.asyncAfter(deadline: .now() + seconds, execute: work)
-    }
 
     private func scheduleRebuildAlbumBuckets(debounce seconds: TimeInterval = 0.5) {
         pendingBucketsWork?.cancel()
@@ -90,11 +61,6 @@ final class LibraryViewModel: ObservableObject {
 
     init() {
         albumMappings = AlbumMappingStore.load()
-        // Configure thumbnail cache
-        thumbMem.countLimit = 600
-        thumbMem.totalCostLimit = 64 * 1024 * 1024 // ~64 MB of decoded thumbnails
-        // Ensure disk cache directory exists
-        try? FileManager.default.createDirectory(at: thumbDiskURL, withIntermediateDirectories: true)
 
         Task { await loadLibraryOnLaunch() }
     }
@@ -113,85 +79,135 @@ final class LibraryViewModel: ObservableObject {
     // MARK: - Launch
 
     func loadLibraryOnLaunch() async {
-        // 1) Restore bookmarks → de-dupe → publish
-        //    (Use BookmarkStore.shared.restoredFolderURLs())
-        let restoredFolders = BookmarkStore.shared.restoredFolderURLs()
-        let uniqueFolders = Dictionary(grouping: restoredFolders, by: { $0.standardizedFileURL.path })
+        // 1) Restore bookmarks: key (path when added) → where the folder lives now.
+        let bookmarks = BookmarkStore.shared
+        let restored = bookmarks.restoredFolders()
+        let uniqueFolders = Dictionary(grouping: restored.values, by: { $0.standardizedFileURL.path })
             .compactMapValues { $0.first }
             .values
         savedFolders = Array(uniqueFolders)
 
-        // 2) Cache gating by container UUID
-        let thisContainer = currentContainerID()
-        let lastContainer = UserDefaults.standard.string(forKey: "lastContainerID")
-        let cachedSongs = FilePersistence.loadLibrary()
-        let shouldUseCache = (lastContainer == thisContainer) && !cachedSongs.isEmpty
+        // 2) Load from the database (importing the old JSON files the first time).
+        //    Song paths are rebuilt from each folder's current location, so a moved
+        //    app data folder (reinstall/update) no longer forces a full rescan.
+        let db = self.db
+        let allKeys = bookmarks.allKeys
+        let stored = await Task.detached(priority: .userInitiated) {
+            db.setFolderLocations(restored)
+            db.importLegacyJSONIfNeeded(libraryURL: FilePersistence.libraryURL,
+                                        playlistsURL: FilePersistence.playlistsURL,
+                                        bookmarkKeys: allKeys)
+            return db.fetchSongs()
+        }.value
 
-        if shouldUseCache {
-            // 3) Fast start with cache, then prune anything missing/foreign
-            self.songs = cachedSongs
+        if !stored.isEmpty {
+            // 3) Fast start from the database, then drop anything whose file is gone (memory only).
+            self.songs = stored
+            ArtworkThumbnails.shared.prewarm(stored.compactMap(\.artworkID))
             scheduleRebuildAlbumBuckets()
-            _ = await pruneMissingFiles(updateDisk: false) // don't rewrite cache twice
+            _ = await pruneMissingFiles(updateDisk: false)
         } else {
-            // 4) Cold load + enrich from the *restored folders* (current install)
+            // 4) Nothing stored yet: scan the restored folders.
             var loaded: [Song] = []
-            for folder in savedFolders {
-                let enriched = await loadAndEnrichSongs(from: folder)
-                loaded.append(contentsOf: enriched)
+            var lookups: [(items: [OnlineLookup], folder: URL)] = []
+            for (key, folder) in restored {
+                db.saveFolder(key: key, url: folder)
+                let result = await loadAndEnrichSongs(from: folder)
+                loaded.append(contentsOf: result.songs)
+                lookups.append((result.needsLookup, folder))
             }
             self.songs = loaded
             scheduleRebuildAlbumBuckets()
-            scheduleSaveLibrary()
+            db.saveSongs(loaded)
+            for l in lookups { startOnlineLookups(l.items, in: l.folder) }
         }
-
-        // 5) Remember the container we used to populate cache
-        UserDefaults.standard.set(thisContainer, forKey: "lastContainerID")
     }
 
     // MARK: - Import / Scan
 
     func loadSongs(from folderURL: URL) async {
-        let enriched = await loadAndEnrichSongs(from: folderURL)
-        guard !enriched.isEmpty else { return }
-        await appendSongs(enriched, from: folderURL)
-        BookmarkStore.shared.saveBookmark(forFolder: folderURL)
+        await importAndEnrich(folderURL)
     }
 
+    /// Import a folder: songs appear as soon as their tags are read; songs with
+    /// incomplete tags are then looked up online in the background and updated in place.
     func importAndEnrich(_ folderURL: URL) async {
-        let enriched = await loadAndEnrichSongs(from: folderURL)
-        guard !enriched.isEmpty else { return }
-        await appendSongs(enriched, from: folderURL)
+        let result = await loadAndEnrichSongs(from: folderURL)
+        guard !result.songs.isEmpty else { return }
+        await appendSongs(result.songs, from: folderURL)
         BookmarkStore.shared.saveBookmark(forFolder: folderURL)
+        startOnlineLookups(result.needsLookup, in: folderURL)
     }
 
-    private func loadAndEnrichSongs(from folderURL: URL) async -> [Song] {
-        // Load file URLs off the main thread
-        let raw = await SongLoader.loadSongs(from: folderURL)
-        guard !raw.isEmpty else { return [] }
+    typealias OnlineLookup = (raw: Song, shown: Song)
 
-        // Limit concurrency to keep CPU/thermal in check
-        let chunkSize = 8
-        var enrichedAll: [Song] = []
-        for chunk in raw.chunked(into: chunkSize) {
-            do {
-                let enrichedChunk = try await withThrowingTaskGroup(of: Song.self) { group in
-                    for s in chunk { group.addTask { await self.enrich(song: s) } }
-                    return try await group.reduce(into: [Song]()) { $0.append($1) }
-                }
-                enrichedAll.append(contentsOf: enrichedChunk)
-            } catch {
-                print("❌ Metadata enrichment chunk failed: \(error)")
-                enrichedAll.append(contentsOf: chunk) // fall back to raw for this chunk
-            }
-        }
+    /// Fast, offline part of import (tags + cleanup + album naming). Never touches the network.
+    private func loadAndEnrichSongs(from folderURL: URL) async -> (songs: [Song], needsLookup: [OnlineLookup]) {
+        let scan = await SongLoader.scanLocal(from: folderURL)
+        guard !scan.songs.isEmpty else { return ([], []) }
+
+        var cleaned: [Song] = []
+        cleaned.reserveCapacity(scan.songs.count)
+        for s in scan.songs { cleaned.append(await enrich(song: s)) }
 
         // Pick a final album display name and persist mapping for this folder
-        let finalAlbumName = resolveFinalAlbumName(from: enrichedAll, folderURL: folderURL)
+        let finalAlbumName = resolveFinalAlbumName(from: cleaned, folderURL: folderURL)
         albumMappings[folderURL.path] = finalAlbumName
         AlbumMappingStore.save(albumMappings)
 
         // Rewrite album field so grouping is stable
-        return renameSongs(enrichedAll, withAlbumName: finalAlbumName)
+        return (renameSongs(cleaned, withAlbumName: finalAlbumName), scan.needsLookup)
+    }
+
+    /// Slow, online part of import. Runs one song at a time (MusicBrainz allows ~1 request/sec)
+    /// and updates each song in the library as its result arrives.
+    private func startOnlineLookups(_ items: [OnlineLookup], in folderURL: URL) {
+        guard !items.isEmpty else { return }
+        Task { [weak self] in
+            var found: [Song] = []
+            for item in items {
+                let improved = await SongLoader.lookUpOnline(raw: item.raw, shown: item.shown)
+                guard let self else { return }
+                let cleaned = await self.enrich(song: improved)
+                found.append(cleaned)
+                self.applyLookup(cleaned)
+            }
+            self?.refreshAlbumName(for: folderURL, using: found)
+        }
+    }
+
+    /// Swap in an improved song, keeping its current album so album groups don't flicker mid-import.
+    private func applyLookup(_ improved: Song) {
+        guard let i = songs.firstIndex(where: { $0.id == improved.id }) else { return }
+        var updated = improved
+        updated.album = songs[i].album
+        guard updated != songs[i] else { return }
+        songs[i] = updated
+        db.saveSongs([updated])
+        scheduleRebuildAlbumBuckets()
+    }
+
+    /// After all lookups for a folder finish, re-pick the album name now that online results are in.
+    private func refreshAlbumName(for folderURL: URL, using found: [Song]) {
+        let foundByID = Dictionary(found.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let folderPath = folderURL.standardizedFileURL.path
+        let folderSongs = songs.filter { $0.url.standardizedFileURL.path.hasPrefix(folderPath) }
+        guard !folderSongs.isEmpty else { return }
+
+        let candidates = folderSongs.map { foundByID[$0.id] ?? $0 }
+        let name = resolveFinalAlbumName(from: candidates, folderURL: folderURL)
+        guard name != albumMappings[folderURL.path] else { return }
+
+        print("🏷️ Album name for \(folderURL.lastPathComponent) updated → \(name)")
+        albumMappings[folderURL.path] = name
+        AlbumMappingStore.save(albumMappings)
+        var renamed: [Song] = []
+        for i in songs.indices where songs[i].url.standardizedFileURL.path.hasPrefix(folderPath) {
+            songs[i].album = name
+            renamed.append(songs[i])
+        }
+        db.saveSongs(renamed)
+        scheduleRebuildAlbumBuckets()
     }
 
     private func enrich(song: Song) async -> Song {
@@ -212,7 +228,7 @@ final class LibraryViewModel: ObservableObject {
             album: cleanAlbum,
             duration: song.duration,
             url: song.url,
-            artwork: song.artwork,
+            artworkID: song.artworkID,
             musicBrainzReleaseID: song.musicBrainzReleaseID,
             genre: cleanGenre ?? song.genre,
             year: cleanYear,
@@ -242,15 +258,16 @@ final class LibraryViewModel: ObservableObject {
         let existingPaths = Set(savedFolders.map { $0.standardizedFileURL.path })
         if !existingPaths.contains(normalizedPath) {
             savedFolders.append(folderURL.standardizedFileURL)
-            scheduleSaveFolderList()
         }
+        db.saveFolder(key: BookmarkStore.shared.key(forFolder: folderURL), url: folderURL)
 
-        // De-dup by URL, append, persist (debounced)
+        // De-dup by URL, append, persist just the new songs
         let existingURLs = Set(songs.map { $0.url })
         let filtered = newSongs.filter { !existingURLs.contains($0.url) }
         if !filtered.isEmpty {
             self.songs.append(contentsOf: filtered)
-            scheduleSaveLibrary()
+            ArtworkThumbnails.shared.prewarm(filtered.compactMap(\.artworkID))
+            db.saveSongs(filtered)
             scheduleRebuildAlbumBuckets()
         }
     }
@@ -273,11 +290,11 @@ final class LibraryViewModel: ObservableObject {
         for s in removed { songMetadataCache.removeValue(forKey: s.id) }
 
         // Clean persistence
+        db.deleteSongs(ids: removed.map(\.id))
+        db.deleteFolder(key: BookmarkStore.shared.key(forFolder: folder))
         BookmarkStore.shared.removeBookmark(forFolderPath: folder.path)
         albumMappings.removeValue(forKey: folder.path)
         AlbumMappingStore.save(albumMappings)
-        scheduleSaveFolderList()
-        scheduleSaveLibrary()
         scheduleRebuildAlbumBuckets()
     }
 
@@ -322,7 +339,7 @@ final class LibraryViewModel: ObservableObject {
                     self.songs = kept
                     self.songMetadataCache = newCache
                     self.scheduleRebuildAlbumBuckets()
-                    if updateDisk { self.scheduleSaveLibrary() }
+                    if updateDisk { self.db.deleteSongs(ids: Array(removedIDs)) }
                     continuation.resume(returning: removedIDs.count)
                 }
             }
@@ -346,64 +363,15 @@ final class LibraryViewModel: ObservableObject {
         guard !idsToRemove.isEmpty else { return }
         self.songs.removeAll { idsToRemove.contains($0.id) }
         for id in idsToRemove { self.songMetadataCache.removeValue(forKey: id) }
-        scheduleSaveLibrary()
+        db.deleteSongs(ids: Array(idsToRemove))
         scheduleRebuildAlbumBuckets()
     }
 
     // MARK: - Thumbnails
-    /// Return a cached or freshly built square thumbnail for a song's embedded artwork.
-    /// - Parameters:
-    ///   - song: The song whose `artwork` Data (if present) is used.
-    ///   - side: Target size in points (width==height). The image is rendered at the device scale.
-    /// - Returns: UIImage if artwork exists; otherwise nil (view should show a placeholder).
+    /// Cover thumbnail for a song (shared by every song with the same artwork). Nil if it has none.
     func thumbnailFor(song: Song, side: CGSize) async -> UIImage? {
-        let sideInt = Int(max(side.width, side.height))
-        let key = "s:\(song.id)-\(sideInt)" as NSString
-
-        // 1) Memory cache
-        if let img = thumbMem.object(forKey: key) { return img }
-
-        // 2) Disk cache
-        let diskURL = thumbDiskURL.appendingPathComponent("\(song.id)-\(sideInt).png")
-        if let data = try? Data(contentsOf: diskURL), let img = UIImage(data: data, scale: UIScreen.main.scale) {
-            thumbMem.setObject(img, forKey: key, cost: Int(img.size.width * img.size.height))
-            return img
-        }
-
-        // 3) Build from embedded artwork data (if any)
-        guard let artData = song.artwork else { return nil }
-
-        // Do the resize off the main thread
-        return await withCheckedContinuation { continuation in
-            thumbIO.async { [weak self] in
-                guard let self else { continuation.resume(returning: nil); return }
-                let img = self.makeThumbnail(from: artData, side: CGSize(width: sideInt, height: sideInt))
-                if let img {
-                    // Save to caches
-                    self.thumbMem.setObject(img, forKey: key, cost: Int(img.size.width * img.size.height))
-                    if let png = img.pngData() { try? png.write(to: diskURL, options: .atomic) }
-                }
-                continuation.resume(returning: img)
-            }
-        }
-    }
-
-    /// Resize & crop center to a square thumbnail.
-    private func makeThumbnail(from data: Data, side: CGSize) -> UIImage? {
-        guard let src = UIImage(data: data) else { return nil }
-        let target = max(side.width, side.height)
-        let scale = UIScreen.main.scale
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: target, height: target))
-        let img = renderer.image { ctx in
-            ctx.cgContext.interpolationQuality = .high
-            let aspect = max(target / src.size.width, target / src.size.height)
-            let w = src.size.width * aspect
-            let h = src.size.height * aspect
-            let x = (target - w) / 2
-            let y = (target - h) / 2
-            src.draw(in: CGRect(x: x, y: y, width: w, height: h))
-        }
-        return UIImage(cgImage: img.cgImage!, scale: scale, orientation: .up)
+        guard let id = song.artworkID else { return nil }
+        return await ArtworkThumbnails.shared.thumbnail(for: id)
     }
 
     // MARK: - Helpers
@@ -416,11 +384,8 @@ final class LibraryViewModel: ObservableObject {
     }
 
     private func renameSongs(_ songs: [Song], withAlbumName albumName: String) -> [Song] {
-        songs.map {
-            Song(id: $0.id, title: $0.title, artist: $0.artist, album: albumName,
-                 duration: $0.duration, url: $0.url, artwork: $0.artwork,
-                 genre: $0.genre, year: $0.year, trackNumber: $0.trackNumber, discNumber: $0.discNumber)
-        }
+        // Copy-and-modify keeps every other field (MusicBrainz ID, link, tags) intact.
+        songs.map { var s = $0; s.album = albumName; return s }
     }
 
     /// Delete sidecar files we created (optional cleanup so art/json don’t keep albums visible).

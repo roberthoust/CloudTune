@@ -210,32 +210,9 @@ struct SongRow: View {
 private struct SongArtThumb: View {
     let song: Song
     let side: CGFloat
-    @EnvironmentObject var libraryVM: LibraryViewModel
-
-    @State private var image: UIImage?
-
     var body: some View {
-        ZStack {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                // Lightweight placeholder while thumbnail is resolved
-                Image("DefaultCover")
-                    .resizable()
-                    .scaledToFill()
-                    .redacted(reason: .placeholder)
-                    .task(id: song.id) {
-                        let size = CGSize(width: side, height: side)
-                        let vm: LibraryViewModel = libraryVM  // disambiguate EnvironmentObject wrapper
-                        if let thumb = await vm.thumbnailFor(song: song, side: size) {
-                            await MainActor.run { self.image = thumb }
-                        }
-                    }
-            }
-        }
-        .cornerRadius(8)
-        .clipped()
+        ArtworkThumbView(artworkID: song.artworkID)
+            .cornerRadius(8)
+            .clipped()
     }
 }

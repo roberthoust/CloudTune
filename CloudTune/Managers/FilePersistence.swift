@@ -49,9 +49,18 @@ struct FilePersistence {
             }
         }
     }
+    /// Decodes the saved library. Slow for old files (image bytes inside), so call off the main thread.
     static func loadLibrary() -> [Song] {
         guard let data = try? Data(contentsOf: libraryURL) else { return [] }
-        return (try? JSONDecoder().decode([Song].self, from: data)) ?? []
+        let songs = (try? JSONDecoder().decode([Song].self, from: data)) ?? []
+
+        // Old format embedded artwork bytes; decoding just moved them into ArtworkStore.
+        // Rewrite now so the file shrinks and future launches are fast.
+        if !songs.isEmpty, data.range(of: Data("\"artwork\":".utf8)) != nil {
+            print("🖼️ Migrated artwork out of Library.json (\(data.count / 1_048_576) MB) — rewriting.")
+            saveLibrary(songs)
+        }
+        return songs
     }
 
     // MARK: Playlists — debounced writer

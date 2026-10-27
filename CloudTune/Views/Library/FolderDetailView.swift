@@ -264,30 +264,7 @@ private struct FolderSongRow: View {
 private struct FolderSongArtThumb: View {
     let song: Song
     let side: CGFloat
-    @EnvironmentObject var libraryVM: LibraryViewModel
-    @State private var image: UIImage?
-
     var body: some View {
-        ZStack {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                Image("DefaultCover")
-                    .resizable()
-                    .scaledToFill()
-                    .redacted(reason: .placeholder)
-                    .task(id: song.id) {
-                        // Use VM thumbnail cache if you have it; else decode here
-                        let size = CGSize(width: side, height: side)
-                        if let thumb = await libraryVM.thumbnailFor(song: song, side: size) {
-                            await MainActor.run { self.image = thumb }
-                        } else if let data = song.artwork, let decoded = await Task.detached(priority: .utility, operation: { UIImage(data: data) }).value {
-                            await MainActor.run { self.image = decoded }
-                        }
-                    }
-            }
-        }
+        ArtworkThumbView(artworkID: song.artworkID)
     }
 }

@@ -590,8 +590,31 @@ private func shouldReplaceArtist(old: String, with new: String, album: String, c
 
 final class MetadataEnricher {
 
+    /// True when local tags/folder/filename left gaps that only an online lookup can fill
+    /// (the same condition `enrich` uses for its early exit).
+    static func needsOnlineLookup(_ song: Song) -> Bool {
+        isPlaceholder(song.title) || isPlaceholder(song.artist) || isPlaceholder(song.album) || song.duration <= 0
+    }
+
     /// Main entry: Local tags → folder hints → filename → MusicBrainz → Artwork → Deezer → Save sidecar
     static func enrich(_ song: Song) async throws -> Song {
+        let working = enrichLocal(song)
+        let hints = folderHints(from: song.url)
+        let nameNoExt = song.url.deletingPathExtension().lastPathComponent
+        let parsed = splitArtistTitle(nameNoExt, fallbackArtist: working.artist.isEmpty ? nil : working.artist)
+
+        // EARLY EXIT — If we now have good title/artist/album/duration, persist and return.
+        if !needsOnlineLookup(working) {
+            saveSidecar(for: working, confidence: 1.0, queryUsed: "local")
+            return working
+        }
+
+        return await enrichOnline(working, original: song, hints: hints, parsed: parsed)
+    }
+
+    /// Steps 1–2b only: local tags, album-artist fix, folder hints, filename parsing.
+    /// No network and no file writes, so it is fast enough to run during import.
+    static func enrichLocal(_ song: Song) -> Song {
         var working = song
 
         // STEP 1 — LOCAL TAGS
@@ -631,15 +654,14 @@ final class MetadataEnricher {
         }
 
         log.debug("Cleaned → title='\(working.title, privacy: .public)' artist='\(working.artist, privacy: .public)' album='\(working.album, privacy: .public)'")
+        return working
+    }
 
-        // EARLY EXIT — If we now have good title/artist/album/duration, persist and return.
-        if !isPlaceholder(working.title),
-           !isPlaceholder(working.artist),
-           !isPlaceholder(working.album),
-           working.duration > 0 {
-            saveSidecar(for: working, confidence: 1.0, queryUsed: "local")
-            return working
-        }
+    /// Steps 3–6: MusicBrainz, cover art, Deezer, sidecar. Slow (rate-limited network), run in the background.
+    private static func enrichOnline(_ cleaned: Song, original song: Song,
+                                     hints: (artist: String?, album: String?),
+                                     parsed: (artist: String?, title: String)) async -> Song {
+        var working = cleaned
 
         // STEP 3 — MUSICBRAINZ (using current artist/title)
         // Build weighted query; fetch up to 5 candidates; score them; accept only if ≥ threshold.
