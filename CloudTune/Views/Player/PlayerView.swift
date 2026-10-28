@@ -449,13 +449,13 @@ private struct SpeedPitchSheet: View {
                 if !pro.isPro {
                     Section {
                         Label(pro.trialSongsLeft == 1
-                              ? "Free trial: 1 more song with custom speed or pitch."
-                              : "Free trial: \(pro.trialSongsLeft) more songs with custom speed or pitch.",
+                              ? "Free today: 1 more song with custom speed or pitch."
+                              : "Free today: \(pro.trialSongsLeft) more songs with custom speed or pitch.",
                               systemImage: "sparkles")
                             .font(.subheadline)
                             .foregroundStyle(Color("appAccent"))
                     } footer: {
-                        Text("Replaying a trial song is free. CloudTune Pro unlocks speed & pitch for every song.")
+                        Text("You get \(ProStore.speedPitchTrialSongs) songs a day, and replaying one of today's is free. CloudTune Pro unlocks speed & pitch for every song.")
                     }
                 }
 

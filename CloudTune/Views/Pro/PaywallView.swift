@@ -15,7 +15,7 @@ enum PaywallReason: String, Identifiable {
     var message: String? {
         switch self {
         case .equalizer: return "The equalizer is part of CloudTune Pro."
-        case .speedPitch: return "You've used your \(ProStore.speedPitchTrialSongs) free speed & pitch songs."
+        case .speedPitch: return "You've used today's \(ProStore.speedPitchTrialSongs) free speed & pitch songs. More tomorrow, or go unlimited with Pro."
         case .cloud: return "Cloud music is part of CloudTune Pro."
         case .settings: return nil
         }

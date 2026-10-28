@@ -52,11 +52,11 @@ struct RootView: View {
         .onChange(of: playbackVM.currentSong?.id) { _, _ in enforceSpeedPitchAccess() }
         .onChange(of: playbackVM.playbackRate) { _, _ in enforceSpeedPitchAccess() }
         .onChange(of: playbackVM.pitchCents) { _, _ in enforceSpeedPitchAccess() }
-        .alert("Free speed & pitch songs used", isPresented: $showTrialEnded) {
+        .alert("Today's free speed & pitch songs are used", isPresented: $showTrialEnded) {
             Button("Unlock Pro") { paywallReason = .speedPitch }
             Button("Not Now", role: .cancel) {}
         } message: {
-            Text("Playback is back to normal speed. CloudTune Pro unlocks speed & pitch for every song.")
+            Text("Playback is back to normal speed. You get \(ProStore.speedPitchTrialSongs) more tomorrow, or CloudTune Pro unlocks speed & pitch for every song.")
         }
         .sheet(item: $paywallReason) { reason in
             PaywallView(reason: reason)

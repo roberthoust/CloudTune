@@ -7,37 +7,47 @@ struct LibraryView: View {
     @State private var showFolderPicker = false
     @State private var showFolderManager = false
 
+    /// First run (or everything removed): show how to get started instead of empty tiles.
+    private var showWelcome: Bool {
+        libraryVM.hasLoadedLibrary && libraryVM.songs.isEmpty && !importState.isImporting
+    }
+
     var body: some View {
         ZStack {
             NavigationStack {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 24) {
+                Group {
+                    if showWelcome {
+                        WelcomeView { showFolderPicker = true }
+                    } else {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 24) {
 
-                        // MARK: - Header
-                        Text("Your Library")
-                            .font(.system(size: 32, weight: .semibold, design: .rounded))
-                            .padding(.horizontal)
-                        if let vm = _libraryVM.wrappedValue as? LibraryViewModel,
-                           !vm.songs.isEmpty || !vm.albums.isEmpty {
-                            Group {
-                                Text("\(libraryVM.songs.count) songs • \(libraryVM.albums.count) albums")
-                                    .font(.footnote)
-                                    .foregroundColor(.secondary)
+                                // MARK: - Header
+                                Text("Your Library")
+                                    .font(.system(size: 32, weight: .semibold, design: .rounded))
                                     .padding(.horizontal)
+                                if !libraryVM.songs.isEmpty {
+                                    Group {
+                                        Text("\(libraryVM.songs.count) songs • \(libraryVM.albums.count) albums")
+                                            .font(.footnote)
+                                            .foregroundColor(.secondary)
+                                            .padding(.horizontal)
+                                    }
+                                }
+
+                                // MARK: - Navigation Tiles (Vertical List)
+                                VStack(spacing: 16) {
+                                    LibraryNavTile(title: "Songs", icon: "music.note", destination: SongsView())
+                                    LibraryNavTile(title: "Albums", icon: "rectangle.stack", destination: AlbumsView())
+                                    LibraryNavTile(title: "Folders", icon: "rectangle.stack", destination: FoldersView())
+                                    LibraryNavTile(title: "Playlists", icon: "text.badge.plus", destination: PlaylistScreen())
+                                }
+                                .padding(.horizontal)
+
                             }
+                            .padding(.top)
                         }
-
-                        // MARK: - Navigation Tiles (Vertical List)
-                        VStack(spacing: 16) {
-                            LibraryNavTile(title: "Songs", icon: "music.note", destination: SongsView())
-                            LibraryNavTile(title: "Albums", icon: "rectangle.stack", destination: AlbumsView())
-                            LibraryNavTile(title: "Folders", icon: "rectangle.stack", destination: FoldersView())
-                            LibraryNavTile(title: "Playlists", icon: "text.badge.plus", destination: PlaylistScreen())
-                        }
-                        .padding(.horizontal)
-
                     }
-                    .padding(.top)
                 }
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
@@ -58,17 +68,7 @@ struct LibraryView: View {
                         }
                     }
                 }
-                .sheet(isPresented: $showFolderPicker) {
-                    FolderPicker { folderURL in
-                        showFolderPicker = false
-                        Task {
-                            await MainActor.run { importState.isImporting = true }
-                            await libraryVM.importAndEnrich(folderURL)
-                            await MainActor.run { importState.isImporting = false }
-                        }
-                    }
-                    .interactiveDismissDisabled(importState.isImporting)
-                }
+                .folderImporter(isPresented: $showFolderPicker)
             }
             if importState.isImporting {
                 ZStack {

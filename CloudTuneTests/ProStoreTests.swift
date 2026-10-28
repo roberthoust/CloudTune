@@ -9,8 +9,14 @@ struct ProStoreTests {
         UserDefaults(suiteName: "ProStoreTests-\(UUID().uuidString)")!
     }
 
+    private func freshKeychain() -> String { "ProStoreTests-\(UUID().uuidString)" }
+
+    private func makeStore(_ defaults: UserDefaults, _ keychain: String) -> ProStore {
+        ProStore(defaults: defaults, keychainService: keychain, loadOnInit: false)
+    }
+
     @Test func speedPitchTrialAllowsThreeSongs() {
-        let store = ProStore(defaults: freshDefaults(), loadOnInit: false)
+        let store = makeStore(freshDefaults(), freshKeychain())
         #expect(store.trialSongsLeft == 3)
 
         for id in ["a", "b", "c"] {
@@ -23,10 +29,41 @@ struct ProStoreTests {
         #expect(!store.canUseSpeedPitch(on: "d"))   // but not on new ones
     }
 
-    @Test func trialIsRememberedAcrossLaunches() {
+    @Test func trialSurvivesRelaunchAndReinstall() {
+        let keychain = freshKeychain()
+        makeStore(freshDefaults(), keychain).noteSpeedPitchUse(on: "a")
+        // Reinstalling wipes UserDefaults but not the Keychain.
+        #expect(makeStore(freshDefaults(), keychain).trialSongsLeft == 2)
+        Keychain.set(nil, service: keychain, account: "pro.speedPitchTrialSongIDs")
+    }
+
+    @Test func trialStartsOverEachDay() {
+        var clock = ISO8601DateFormatter().date(from: "2026-10-27T22:00:00Z")!
+        let store = ProStore(defaults: freshDefaults(), keychainService: freshKeychain(),
+                             now: { clock }, loadOnInit: false)
+        for id in ["a", "b", "c"] { store.noteSpeedPitchUse(on: id) }
+        #expect(!store.canUseSpeedPitch(on: "d"))
+
+        clock = clock.addingTimeInterval(24 * 3600)   // next day
+        #expect(store.trialSongsLeft == 3)
+        #expect(store.canUseSpeedPitch(on: "d"))
+        store.noteSpeedPitchUse(on: "d")
+        #expect(store.trialSongIDs == ["d"])
+    }
+
+    @Test func resetTrialStartsOver() {
+        let keychain = freshKeychain()
+        let store = makeStore(freshDefaults(), keychain)
+        for id in ["a", "b", "c"] { store.noteSpeedPitchUse(on: id) }
+        store.resetTrial()
+        #expect(store.trialSongsLeft == 3)
+        #expect(makeStore(freshDefaults(), keychain).trialSongsLeft == 3)   // reset is saved too
+    }
+
+    @Test func trialFromFirstProBuildCarriesOver() {
         let defaults = freshDefaults()
-        ProStore(defaults: defaults, loadOnInit: false).noteSpeedPitchUse(on: "a")
-        #expect(ProStore(defaults: defaults, loadOnInit: false).trialSongsLeft == 2)
+        defaults.set(["a", "b"], forKey: "pro.speedPitchTrialSongIDs")
+        #expect(makeStore(defaults, freshKeychain()).trialSongsLeft == 1)
     }
 
     /// Runs a real purchase against the local StoreKit configuration (no App Store account).
@@ -40,7 +77,7 @@ struct ProStoreTests {
         session.clearTransactions()
 
         let defaults = freshDefaults()
-        let store = ProStore(defaults: defaults, loadOnInit: false)
+        let store = makeStore(defaults, freshKeychain())
         await store.loadProduct()
         #expect(store.product?.displayName == "CloudTune Pro")
         #expect(store.priceText == "$9.99")
@@ -52,7 +89,7 @@ struct ProStoreTests {
         #expect(defaults.bool(forKey: "pro.isPro"))
 
         // A fresh install (empty defaults) finds the purchase through the App Store.
-        let reinstalled = ProStore(defaults: freshDefaults(), loadOnInit: false)
+        let reinstalled = makeStore(freshDefaults(), freshKeychain())
         await reinstalled.refresh()
         #expect(reinstalled.isPro)
 
