@@ -25,6 +25,8 @@ final class LibraryViewModel: ObservableObject {
         let repSongID: Song.ID?
     }
     @Published var selectedAlbumID: String?
+    /// False until the library has been read at launch (so an empty library isn't shown too early).
+    @Published private(set) var hasLoadedLibrary = false
 
     var albums: [String] {
         Set(songs.map { $0.album }).sorted()
@@ -109,6 +111,7 @@ final class LibraryViewModel: ObservableObject {
             self.songs = stored
             ArtworkThumbnails.shared.prewarm(stored.compactMap(\.artworkID))
             scheduleRebuildAlbumBuckets()
+            hasLoadedLibrary = true
             _ = await pruneMissingFiles(updateDisk: false)
             startAlbumLookups()
         } else {
@@ -124,6 +127,7 @@ final class LibraryViewModel: ObservableObject {
             self.songs = loaded
             scheduleRebuildAlbumBuckets()
             db.saveSongs(loaded)
+            hasLoadedLibrary = true
             for l in lookups { startOnlineLookups(l.items, in: l.folder) }
             startAlbumLookups()
         }

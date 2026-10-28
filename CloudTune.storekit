@@ -1,0 +1,40 @@
+{
+  "identifier" : "6D5C2B7A-3F0E-4C1D-9B8A-2E7C10D7E000",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "9.99",
+      "familyShareable" : true,
+      "internalID" : "6740000001",
+      "localizations" : [
+        {
+          "description" : "Equalizer, speed & pitch, and cloud music. One-time purchase.",
+          "displayName" : "CloudTune Pro",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.robb.CloudTune.pro",
+      "referenceName" : "CloudTune Pro",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_enableAskToBuyInterruptionForTesting" : false,
+    "_enableBackgroundDeliveryForTesting" : true,
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

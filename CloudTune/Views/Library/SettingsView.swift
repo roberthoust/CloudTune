@@ -3,34 +3,42 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var libraryVM: LibraryViewModel
     @EnvironmentObject var importState: ImportState
+    @EnvironmentObject var pro: ProStore
     @State private var showFolderPicker = false
+    @State private var showPaywall = false
+    @State private var showEmailCopied = false
+    @Environment(\.openURL) private var openURL
     @State private var showSongPicker = false
     @AppStorage("selectedColorScheme") private var selectedColorScheme: String = "system"
 
     var body: some View {
         NavigationStack {
             List {
+                proSection
                 importedFoldersSection
                 libraryMaintenanceSection
                 appearanceSection
+                aboutSection
+                #if DEBUG
+                developerSection
+                #endif
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Settings")
             .tint(Color("appAccent"))
-            .sheet(isPresented: $showFolderPicker) {
-                FolderPicker { folderURL in
-                    showFolderPicker = false
-                    Task {
-                        await MainActor.run { importState.isImporting = true }
-                        await libraryVM.importAndEnrich(folderURL)
-                        await MainActor.run { importState.isImporting = false }
-                    }
-                }
-                .interactiveDismissDisabled(importState.isImporting)
+            .sheet(isPresented: $showPaywall) {
+                PaywallView(reason: .settings)
             }
+            .alert("CloudTune Pro", isPresented: Binding(get: { pro.message != nil && !showPaywall },
+                                                         set: { if !$0 { pro.message = nil } })) {
+                Button("OK") {}
+            } message: {
+                Text(pro.message ?? "")
+            }
+            .folderImporter(isPresented: $showFolderPicker)
             .fileImporter(
                 isPresented: $showSongPicker,
-                allowedContentTypes: [.mp3],
+                allowedContentTypes: [.audio],   // MP3, FLAC, M4A, WAV, AIFF, …
                 allowsMultipleSelection: false
             ) { result in
                 switch result {
@@ -67,6 +75,40 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var proSection: some View {
+        Section(header: sectionHeader("CloudTune Pro")) {
+            if pro.isPro {
+                Label("Pro unlocked. Thank you!", systemImage: "checkmark.seal.fill")
+                    .fontWeight(.medium)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(Color("appAccent"))
+            } else {
+                Button {
+                    showPaywall = true
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Unlock CloudTune Pro: \(pro.priceText)", systemImage: "sparkles")
+                            .fontWeight(.semibold)
+                        Text("Equalizer, speed & pitch, and cloud music. One-time purchase.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+
+            Button {
+                Task { await pro.restore() }
+            } label: {
+                Label("Restore Purchases", systemImage: "arrow.clockwise")
+                    .fontWeight(.medium)
+                    .padding(.vertical, 6)
+            }
+            .disabled(pro.isPurchasing)
+        }
+        .headerProminence(.increased)
     }
 
     private var importedFoldersSection: some View {
@@ -165,6 +207,89 @@ struct SettingsView: View {
             .padding(.bottom, 10)
         }
         .headerProminence(.increased)
+    }
+
+    #if DEBUG
+    /// Only in builds run from Xcode; never in the App Store version.
+    private var developerSection: some View {
+        Section(header: sectionHeader("Developer"),
+                footer: Text("Only visible in builds run from Xcode.")) {
+            Button(role: .destructive) {
+                pro.resetTrial()
+            } label: {
+                Label("Reset Today's Speed/Pitch Trial (\(pro.trialSongsLeft) of \(ProStore.speedPitchTrialSongs) left)",
+                      systemImage: "arrow.counterclockwise")
+                    .padding(.vertical, 6)
+            }
+        }
+        .headerProminence(.increased)
+    }
+    #endif
+
+    private var aboutSection: some View {
+        Section(header: sectionHeader("About")) {
+            HStack {
+                Label("Version", systemImage: "info.circle")
+                Spacer()
+                Text("\(AppInfo.version) (\(AppInfo.build))")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 6)
+
+            Button {
+                contactSupport()
+            } label: {
+                Label("Contact Support", systemImage: "envelope")
+                    .fontWeight(.medium)
+                    .padding(.vertical, 6)
+            }
+
+            if let url = AppInfo.reviewURL {
+                Link(destination: url) {
+                    Label("Rate CloudTune", systemImage: "star")
+                        .fontWeight(.medium)
+                        .padding(.vertical, 6)
+                }
+            }
+
+            if let url = AppInfo.privacyPolicyURL {
+                Link(destination: url) {
+                    Label("Privacy Policy", systemImage: "hand.raised")
+                        .fontWeight(.medium)
+                        .padding(.vertical, 6)
+                }
+            }
+
+            NavigationLink(destination: AcknowledgementsView()) {
+                Label("Acknowledgements", systemImage: "heart.text.square")
+                    .fontWeight(.medium)
+                    .padding(.vertical, 6)
+            }
+        }
+        .headerProminence(.increased)
+        .alert("Email copied", isPresented: $showEmailCopied) {
+            Button("OK") {}
+        } message: {
+            Text("No email app is set up, so \(AppInfo.supportEmail) was copied. Paste it into any email app.")
+        }
+    }
+
+    /// Opens a support email with the details we'd ask for anyway; copies the address if there's no mail app.
+    private func contactSupport() {
+        let device = UIDevice.current
+        let subject = "CloudTune Support"
+        let body = "\n\n—\nCloudTune \(AppInfo.version) (\(AppInfo.build)) · \(device.systemName) \(device.systemVersion)"
+        var components = URLComponents()
+        components.scheme = "mailto"
+        components.path = AppInfo.supportEmail
+        components.queryItems = [.init(name: "subject", value: subject), .init(name: "body", value: body)]
+        guard let url = components.url else { return }
+        openURL(url) { accepted in
+            if !accepted {
+                UIPasteboard.general.string = AppInfo.supportEmail
+                showEmailCopied = true
+            }
+        }
     }
 
     private func sectionHeader(_ title: String) -> some View {
