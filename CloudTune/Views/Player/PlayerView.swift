@@ -176,8 +176,11 @@ struct PlayerView: View {
     @EnvironmentObject var playlistVM: PlaylistViewModel
     @Environment(\.dismiss) private var dismiss
 
+    @EnvironmentObject var pro: ProStore
+
     @State private var showMoreActions = false
     @State private var activeSheet: ActiveSheet?
+    @State private var paywallReason: PaywallReason?
 
     enum ActiveSheet: Identifiable {
         case eq
@@ -213,6 +216,16 @@ struct PlayerView: View {
         )
     }
 
+    private func proLabel(_ text: String, locked: Bool) -> some View {
+        HStack(spacing: 4) {
+            if locked { Image(systemName: "lock.fill").imageScale(.small) }
+            Text(text)
+        }
+        .font(.footnote)
+        .foregroundColor(.secondary)
+        .padding(.top, -8)
+    }
+
     private func formatTime(_ seconds: Double) -> String {
         let mins = Int(seconds) / 60
         let secs = Int(seconds) % 60
@@ -245,20 +258,24 @@ struct PlayerView: View {
             transport
 
             HStack(spacing: 12) {
-                Button(action: { activeSheet = .eq }) {
+                // EQ and speed/pitch are Pro; free users get speed/pitch on a few songs.
+                Button(action: {
+                    if pro.isPro { activeSheet = .eq } else { paywallReason = .equalizer }
+                }) {
                     // Uppercased once per render (cheap), you can also store in VM if you prefer
-                    Text("EQ: \(EQManager.shared.activePresetName.uppercased())")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                        .padding(.top, -8)
+                    proLabel("EQ: \(EQManager.shared.activePresetName.uppercased())", locked: !pro.isPro)
                 }
 
-                Button(action: { activeSheet = .speedPitch }) {
+                Button(action: {
+                    if pro.canUseSpeedPitch(on: playbackVM.currentSong?.id) {
+                        activeSheet = .speedPitch
+                    } else {
+                        paywallReason = .speedPitch
+                    }
+                }) {
                     let mode = playbackVM.linkSpeedToPitch ? "TAPE" : "SPEED"
-                    Text(String(format: "\(mode): %.2fx", playbackVM.playbackRate))
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                        .padding(.top, -8)
+                    proLabel(String(format: "\(mode): %.2fx", playbackVM.playbackRate),
+                             locked: !pro.canUseSpeedPitch(on: playbackVM.currentSong?.id))
                 }
             }
 
@@ -276,6 +293,10 @@ struct PlayerView: View {
                 }
             }
             Button("Cancel", role: .cancel) { showMoreActions = false }
+        }
+        .sheet(item: $paywallReason) { reason in
+            PaywallView(reason: reason)
+                .environmentObject(pro)
         }
         .fullScreenCover(item: eqSheetBinding) { _ in
             EQSettingsView()
@@ -394,6 +415,7 @@ struct PlayerView: View {
 
 private struct SpeedPitchSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var pro: ProStore
 
     @Binding var playbackRate: Float
 
@@ -424,6 +446,19 @@ private struct SpeedPitchSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                if !pro.isPro {
+                    Section {
+                        Label(pro.trialSongsLeft == 1
+                              ? "Free trial: 1 more song with custom speed or pitch."
+                              : "Free trial: \(pro.trialSongsLeft) more songs with custom speed or pitch.",
+                              systemImage: "sparkles")
+                            .font(.subheadline)
+                            .foregroundStyle(Color("appAccent"))
+                    } footer: {
+                        Text("Replaying a trial song is free. CloudTune Pro unlocks speed & pitch for every song.")
+                    }
+                }
+
                 Section {
                     Toggle("Link Speed & Pitch", isOn: $linkSpeedToPitch)
                 } footer: {

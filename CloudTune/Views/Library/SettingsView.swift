@@ -3,13 +3,16 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var libraryVM: LibraryViewModel
     @EnvironmentObject var importState: ImportState
+    @EnvironmentObject var pro: ProStore
     @State private var showFolderPicker = false
+    @State private var showPaywall = false
     @State private var showSongPicker = false
     @AppStorage("selectedColorScheme") private var selectedColorScheme: String = "system"
 
     var body: some View {
         NavigationStack {
             List {
+                proSection
                 importedFoldersSection
                 libraryMaintenanceSection
                 appearanceSection
@@ -17,6 +20,15 @@ struct SettingsView: View {
             .listStyle(.insetGrouped)
             .navigationTitle("Settings")
             .tint(Color("appAccent"))
+            .sheet(isPresented: $showPaywall) {
+                PaywallView(reason: .settings)
+            }
+            .alert("CloudTune Pro", isPresented: Binding(get: { pro.message != nil && !showPaywall },
+                                                         set: { if !$0 { pro.message = nil } })) {
+                Button("OK") {}
+            } message: {
+                Text(pro.message ?? "")
+            }
             .sheet(isPresented: $showFolderPicker) {
                 FolderPicker { folderURL in
                     showFolderPicker = false
@@ -67,6 +79,40 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var proSection: some View {
+        Section(header: sectionHeader("CloudTune Pro")) {
+            if pro.isPro {
+                Label("Pro unlocked. Thank you!", systemImage: "checkmark.seal.fill")
+                    .fontWeight(.medium)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(Color("appAccent"))
+            } else {
+                Button {
+                    showPaywall = true
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("Unlock CloudTune Pro: \(pro.priceText)", systemImage: "sparkles")
+                            .fontWeight(.semibold)
+                        Text("Equalizer, speed & pitch, and cloud music. One-time purchase.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+
+            Button {
+                Task { await pro.restore() }
+            } label: {
+                Label("Restore Purchases", systemImage: "arrow.clockwise")
+                    .fontWeight(.medium)
+                    .padding(.vertical, 6)
+            }
+            .disabled(pro.isPurchasing)
+        }
+        .headerProminence(.increased)
     }
 
     private var importedFoldersSection: some View {

@@ -94,6 +94,19 @@ class PlaybackViewModel: NSObject, ObservableObject {
         }
     }
 
+    /// True when speed or pitch is anything other than normal.
+    var hasCustomSpeedOrPitch: Bool {
+        abs(playbackRate - 1) > 0.001 || abs(pitchCents) > 0.5
+    }
+
+    /// Back to normal speed and pitch (same as the Reset button in the speed/pitch sheet).
+    func resetSpeedAndPitch() {
+        playbackRate = 1.0
+        semitones = 0
+        fineCents = 0
+        pitchCents = 0
+    }
+
     /// Prevent feedback loops when we derive pitchCents from semitones/fineCents
     /// and when we derive semitones/fineCents from pitchCents.
     private var isUpdatingPitchUI: Bool = false

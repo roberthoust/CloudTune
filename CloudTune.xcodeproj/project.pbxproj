@@ -36,6 +36,7 @@
 		4A7266212E292F6D00EABE06 /* CloudTune.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CloudTune.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A72662E2E292F6D00EABE06 /* CloudTuneTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CloudTuneTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4A7266382E292F6D00EABE06 /* CloudTuneUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CloudTuneUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		4AC0DB10000000000000001A /* CloudTune.storekit */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstorekit; path = CloudTune.storekit; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -114,6 +115,7 @@
 			isa = PBXGroup;
 			children = (
 				4A44A2B62E30D5D600FEEC70 /* .gitignore */,
+				4AC0DB10000000000000001A /* CloudTune.storekit */,
 				4A7266232E292F6D00EABE06 /* CloudTune */,
 				4A7266312E292F6D00EABE06 /* CloudTuneTests */,
 				4A72663B2E292F6D00EABE06 /* CloudTuneUITests */,
